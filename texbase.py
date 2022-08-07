@@ -17,12 +17,11 @@ class TexItem:
                 yield from item.text_fragments()
 
     def items_and_envs(self, item_classes, env_names):
-        if hasattr(self, 'items'):
+        if any(isinstance(self, cls) for cls in item_classes):
+            yield self
+        elif hasattr(self, 'items'):
             for item in self.items:
-                if any(isinstance(item, cls) for cls in item_classes):
-                    yield item
-                else:
-                    yield from item.items_and_envs(item_classes, env_names)
+                yield from item.items_and_envs(item_classes, env_names)
 
 
 class TexEnvBase(TexItem):

@@ -15,6 +15,7 @@ from nltk.stem import *
 
 
 # get infinitive form of a word using nltk
+from stdenvs import BibliographyEnvironment
 from texdocument import TexDocument, TextFragment
 
 
@@ -27,7 +28,123 @@ import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize, sent_tokenize
 
-stop_words = set(stopwords.words('english'))
+stop_words = set(stopwords.words('english')) | {'ref', 'cref', 'eqref', 'cite'}
+
+
+with open('dict_2-4gram_10000-f.yml', 'r') as pos_dict_file:
+    pos_dict = yaml.load(pos_dict_file, Loader=yaml.CSafeLoader)
+    for key in pos_dict:
+        pos_dict[key] = {k: v for k, v in pos_dict[key].items() if v > 5}
+
+
+dict_pos_set = set(sum((list(v.keys()) for v in pos_dict.values()), []))
+
+
+# detect possible part of speech of a word by its suffix
+def detect_pos_recommendation(word: str):
+    pos = []
+    neg = {}
+    if word.endswith('ing'):
+        if any(key.startswith('VB') for key in pos_dict.get(word[:-3], {})) or \
+                any(key.startswith('VB') for key in pos_dict.get(word[:-3]+'e', {})):
+            pos = ['VBG']
+    else:
+        neg['VBG'] = 'VBD' if word.endswith('ed') else 'VBN' if word.endswith('en') else 'VBZ' if word.endswith('es') else 'VB'
+
+    if word.endswith('ly'):
+        if any(key.startswith('JJ') for key in pos_dict.get(word[:-2], {})):
+            pos = ['RB']
+        neg['JJ'] = 'RB'
+
+    if word.endswith('ed'):
+        if any(key.startswith('VB') for key in pos_dict.get(word[:-2], {})) or \
+                any(key.startswith('VB') for key in pos_dict.get(word[:-2]+'e', {})):
+            pos = ['VBD', 'VBN', 'JJ']
+
+    if word.endswith('en'):
+        if any(key.startswith('VB') for key in pos_dict.get(word[:-2], {})) or \
+                any(key.startswith('VB') for key in pos_dict.get(word[:-2]+'e', {})):
+            pos = ['VBN', 'JJ']
+    if word.endswith('er'):
+        if any(key.startswith('JJ') for key in pos_dict.get(word[:-2], {})) or \
+                any(key.startswith('JJ') for key in pos_dict.get(word[:-2]+'e', {})):
+            pos = ['JJR']
+        if any(key.startswith('RB') for key in pos_dict.get(word[:-2], {})) or \
+                any(key.startswith('RB') for key in pos_dict.get(word[:-2]+'y', {})):
+            pos += ['RBR']
+        if any(key.startswith('VB') for key in pos_dict.get(word[:-2], {})) or \
+                any(key.startswith('VB') for key in pos_dict.get(word[:-2]+'e', {})):
+            pos += ['NN']
+    else:
+        if word not in ('worse', 'less', 'more'):
+            neg['JJR'] = 'JJ'
+            neg['RBR'] = 'RB'
+
+    if word.endswith('est'):
+        if any(key.startswith('JJ') for key in pos_dict.get(word[:-3], {})) or \
+                any(key.startswith('JJ') for key in pos_dict.get(word[:-3]+'e', {})):
+            pos = ['JJS']
+    elif not word.endswith('st'):
+        neg['JJS'] = 'JJ'
+
+    if word.endswith('s'):
+        if any(key.startswith('NN') for key in pos_dict.get(word[:-1], {})) or \
+                word[-3:] == 'ies' and any(key.startswith('NN') for key in pos_dict.get(word[:-3]+'y', {})) or \
+                word[-3:] in ('ses', 'xes', 'zes') and any(key.startswith('NN') for key in pos_dict.get(word[:-2]+'s', {})):
+            if any(letter.isupper() for letter in word):
+                pos.append('NNPS')
+            else:
+                pos.append('NNS')
+        if any(key.startswith('VB') for key in pos_dict.get(word[:-1], {})):
+            pos.append('VBZ')
+    else:
+        neg['VBZ'] = 'VB'
+        neg['NNPS'] = 'NNP'
+        if word[-1] == 'a':
+            if any(key.startswith('NN') for key in pos_dict.get(word[:-1]+'on', {})):
+                pos = ['NNS']
+        else:
+            neg['NNS'] = 'NN'
+
+    if word.endswith('ess'):
+        pos = ['NN']
+
+    if word.endswith('ate'):
+        pos = ['VB', 'VBP', 'NN', 'JJ']
+
+    if word.endswith('ful'):
+        if any(key.startswith('NN') for key in pos_dict.get(word[:-3], {})) or \
+                any(key.startswith('NN') for key in pos_dict.get(word[:-3]+'e', {})):
+            pos = ['JJ']
+    return pos, neg
+
+
+special_tokens = {'ie': 'IE', 'eg': 'EG', 'et_al': 'ET_AL', 'cf': 'CF'}
+
+
+def get_pos(word, tag):
+    if not word:
+        return word, tag
+    if word[0].isupper() and not tag.startswith('NNP'):
+        if word.lower() in stop_words:
+            word = word.lower()
+        else:
+            tag = 'NNP'
+    elif word in special_tokens:
+        tag = special_tokens[word]
+    else:
+        pos, neg = detect_pos_recommendation(word)
+        if tag in neg:
+            tag = neg[tag]
+        if tag in dict_pos_set and ((word in pos_dict and pos_dict[word].get(tag, 0) < 5) or (pos and tag not in pos)):
+            items = [(neg.get(k, k), v) for k, v in pos_dict.get(word, {}).items()]
+            if pos and set(pos)&set(items):
+                tag = max(((k,v) for k,v in items if k in pos), key=lambda x: x[1])[0]
+            elif pos:
+                tag = pos[0]
+            elif items:
+                tag = max(items, key=lambda x: x[1])[0]
+    return word, tag
 
 
 # replaces $ <formula> $ or $$ <formula> $$ or \[ <formula> \] or \begin{equation} <formula> \end{equation} by formula_i
@@ -80,19 +197,12 @@ def replace_tex_formulas(text):
                     break
         prev_end = match.end()
     fragments.append(text[prev_end:])
-    return ' '.join(fragments), formulas
+    return re.sub(r'\\[a-zA-Z]*[*]?', ' ', ' '.join(fragments)), formulas
 
 
 # text efficient multiple replacement
 def replace_multiple(text: str, replacements):
     return re.subn('|'.join(re.escape(k) for k in replacements.keys()), lambda m: replacements[m.group(0)], text)
-
-
-with open('dict_2-4gram_10000-f.yml', 'r') as pos_dict_file:
-    pos_dict = yaml.load(pos_dict_file, Loader=yaml.CSafeLoader)
-
-
-dict_pos_set = set(sum((list(v.keys()) for v in pos_dict.values()), []))
 
 
 # sent_tokenize is one of instances of
@@ -101,13 +211,18 @@ def tokenize_text_nltk(txt):
     res = []
     txt, formulas = replace_tex_formulas(txt)
     # remove all braces
-    replacements = {'{': '', '}': '', 'i.e.': 'ie', 'e.g.': 'eg', 'et al.': 'et_al',
+    replacements = {'{': '', '}': '', 'i.e.': 'ie', 'e.g.': 'eg', 'et al.': 'et_al', 'cf.': 'cf',
                     'Fig.': 'Fig', 'fig.': 'Fig', 'Ref.': 'Ref', 'ref.': 'ref', 'Eq.': 'Eq', 'eq.': 'Eq',
                     'resp.': 'respectively'}
     txt, _ = replace_multiple(txt, replacements)
-    special_tokens = {'ie': 'IE', 'eg': 'EG', 'et_al': 'ET_AL'}
 
     tokenized = sent_tokenize(txt)
+    for i, sent in enumerate(tokenized):
+        fst = sent.find(' ')
+        first_word = sent[:fst]
+        if first_word.lower() in stop_words:
+            tokenized[i] = first_word.lower()+sent[fst:]
+
     # Word tokenizers is used to find the words
     # and punctuation in a string
     wordlists = [word_tokenize(x) for x in tokenized]
@@ -139,13 +254,14 @@ def tokenize_text_nltk(txt):
                 tagged[0] = (tagged[0][0], 'NNP')
 
         for i, (word, tag) in enumerate(tagged):
-            if word and word[0].isupper() and not tag.startswith('NNP'):
-                tagged[i] = (word, 'NNP')
-            elif word in special_tokens:
-                tagged[i] = (word, special_tokens[word])
-            elif tag in dict_pos_set and word in pos_dict and pos_dict[word].get(tag, 0) < 5:
-                best_tag = max(pos_dict[word].items(), key=lambda x: x[1])[0]
-                tagged[i] = (word, best_tag)
+            tagged[i] = get_pos(word, tag)
+            # if word and word[0].isupper() and not tag.startswith('NNP'):
+            #     tagged[i] = (word, 'NNP')
+            # elif word in special_tokens:
+            #     tagged[i] = (word, special_tokens[word])
+            # elif tag in dict_pos_set and word in pos_dict and pos_dict[word].get(tag, 0) < 5:
+            #     best_tag = max(pos_dict[word].items(), key=lambda x: x[1])[0]
+            #     tagged[i] = (word, best_tag)
 
         tagged = [('', 'SOL')] + tagged
         # find and replace formulas in tagged list
@@ -847,459 +963,15 @@ def parse_grammar(grammar: str):
     return Grammar(rules)
 
 
-grammar_str = r"""
-(_SOL [note*] that){ps:VB}
-(induces|implies|coincides|corresponds|varies|decreases|increases){ps:VBZ}
-(commute|denote|recall|decrease|increase){ps:VB}
-(explicit|quantum|interesting){ps:JJ}
-(code|fiber|complex|soundness){ps:NN}
-(codes){ps:NNS}
-(random){ps:JJ}
-(at random*){leaf:1}
-(in turn){ps:RB}
-
-(whether){ps:WHETHER}
-(if){ps:IF}
-(a|an|the){ps:ART}
-(that){ps:THAT}
-(then){ps:THEN}
-(there){ps:THERE}
-(which){ps:WHICH}
-(since){ps:SINCE}
-(due to){ps:IN, due_to:1}
-(such that){ps:SUCHTHAT}
-(of){ps:OF,of_type:1}
-(up to){ps:IN}
-(because of){ps:IN}
-
-(_{}* _FOOTNOTE){footnote:1}
-(@ cite*){ps:CITE, subj:1, aux:1,leaf:1}
-(@ ref|eqref*){ps:CD, subj:1, ref:1, aux:1,leaf:1}
-(@ cref*){ps:NNP, subj:1, ref:1, aux:1,leaf:1}
-(\( _NNP* \)){ps:IABBR}
-(_FW _NNP*){leaf:1}
-(_NNP* _ET_AL){leaf:1}
-(' s*){ps: POS, pos: 1}
-
-(_EQNP* th){ps:JJ,leaf:1}
-(_EQNP _{}*){eqnp:1,leaf:1}
-
-(_CD* % ){leaf:1}
-
-(_NN|NNP*){gsp: NN, subj: 1, many: 0}
-(_NNS|NNPS*){gsp: NN, subj: 1, many: 1}
-(_EQN*){gsp:NN, subj:1}
-(is|are|am|do|does*){gsp: VB, whole:0} 
-(!is|are|am|was|were|be|been [_VBG*]){subj: 1, many: 0}  % ...ing used as a noun
-(is|are|was|were* _VBG{gsp:=VB,subj:=0})
-(by [_VBG*]){subj: 0, gsp: VB}
-(_VB|VBP|VBD|VBZ*){gsp: VB, whole:0}  % verb
-(_{gsp:VB}*){accept_to:1}
-(be|been|is|are|am|was|were* _VBD|VBN){passive: 1} 
-(is|are|am|was|were|can|could|will|would|have|has|had|did|does|do* not){neg:1, leaf:1} 
-(of|in|on|over*){of_type: 1}
-(_{gsp:NN}* _POS){nnpos: 1}
-(he|she|it|they|we|I|this*){can_p:1}
-(_NNP* -|-- _NNP){many_names:1,leaf:1}
-(_SOL [_NN|NNS -|-- _NNP*]){ps:NNP,many_names:1,leaf:1}
-(_{many_names:1}* _IABBR){new_abbr:1,leaf:1}
-(_JJ|DT [one*]){ps:NN,gsp:NN,subj:1,many:0}
-(one*){subj:1,many:0}
-
-(for* a long time){ps:STD,gsp:RB,vvod:1,has_prep:1,leaf:1}
-(in* fact){ps:STD,gsp:RB,vvod:1,has_prep:1,leaf:1}
-(to* this end){ps:STD,gsp:RB,vvod:1,has_prep:1,leaf:1}
-(on* the one hand){ps:STD,gsp:RB,vvod:1,has_prep:1,leaf:1}
-(on* the other hand){ps:STD,gsp:RB,vvod:1,has_prep:1,leaf:1}
-(in* this case){ps:STD,gsp:RB,vvod:1,has_prep:1,leaf:1}
-(in* particular){ps:STD,gsp:RB,vvod:1,has_prep:1,leaf:1}
-(for* example){ps:STD,gsp:RB,vvod:1,has_prep:1,leaf:1}
-([as* follows] :|.){ps:STD,gsp:RB,has_prep:1,leaf:1}
-(_SOL [in* words]){ps:STD,gsp:RB,vvod:1,has_prep:1,leaf:1}
-(yet another*){leaf:1}
-(turn|turns|turned* out){leaf:1}
-(that is){ps:IE}
-(with respect to){ps:IN}
-
-#
-(\( _{}* \)){optional:1}
-(_IE{zpt:null}* ,){zpt:1}
-
-# 
-_RBS _JJ*
-least _JJ*
-(_NNP _NNP*){cmpxnnp: 1}
-(_CD* -|-- _CD){cdrange:1}
-#
-_CITE* , _CITE
-_CITE* and _CITE
-_CITE* , and _CITE
-(_NNP _{subj:1,aux:null}*){named: 1}
-(_NNP* _CITE){cite: 1}
-(_NNP* _CD){numbered: 1}
-(_{named:1}* _CD){numbered: 1}
-(_{gsp:NN}* due to _NNP|NNPS){author:1}
-(more|less|fewer|greater* than _CD|EQN){ps:JJ, compare:1}
-(_RB _CD*)
-
-#
-(`` _{}* ''){quote:1, leaf:1}
-(` _{}* '){quote:1, leaf:1}
-(\( see* \)){ps:CITE}
-(not _IN*){neg:1}
-(at most|least _CD|EQN*){ps:JJ}
-
-(_{gsp:VB,what:null} [that*]){that:can_join}
-^(_JJ* , _JJ){comma:1}
-^(_JJ* and _JJ){and: 1}
-^(_JJ* or _JJ){or: 1}
-^(_JJ and _JJ*){and: 1}
-^(_JJ or _JJ*){or: 1}
-
-^(_JJ* \( _JJ \)){comment:1}
- 
-_JJ|JJS|JJR _NN|NNS|NNP|NNPS*
-_{nnpos:1} _{subj:1}*
-its|his|her|their|our|my _{subj:1}* 
-
-(_{gsp:NN}* _CITE){cite:1}
-(_{gsp:VB}* _CITE){cite:1}
-
-(_{gsp:NN}* _EQN){with_formula:1}
-
-^(_NN* \( _NN|NNP \)){comment:1}
-^(_NNS* \( _NNS|NNPS \)){comment:1}
-^(_{gsp:NN}* \( _{gsp:NN} \)){comment:1}
-^(_NN* \( _IE _NN|NNP \)){comment:1}
-^(_NNS* \( _IE _NNS|NNPS \)){comment:1}
-^(_{gsp:NN}* \( _IE _{gsp:NN} \)){comment:1}
-^([_NN* , _IE _NN|NNP] _EOL){comment:1}
-^([_NNS* , _IE _NNS|NNPS] _EOL){comment:1}
-^([_{gsp:NN}* , _IE _{gsp:NN}] _EOL){comment:1}
-^(_NN* , _IE _NN|NNP ,){comment:1}
-^(_NNS* , _IE _NNS|NNPS ,){comment:1}
-^(_{gsp:NN}* , _IE _{gsp:NN} ,){comment:1}
-
-_VBN _NN|NNS*
-
-(_{gsp:NN} _{gsp:NN,the:null}*){no_of:1}
-^(_{gsp:NN} _{gsp:NN,pod:1,the:null}*){no_of:1}
-(_{subj:1}* _IABBR){new_abbr: 1}
-
-(both _VBG|NN|NNS|NNP|NNPS{many:1}*){gsp:NN,both:1,subj:1}
-(_DT|PDT _VBG|NN|NNS|NNP|NNPS*){gsp:NN,subj:1}
-(the _NN|NNS|EQN*){the:1}
-(the _NNP|NNPS*){the:1, err:1}
-(a|an _NN|NNP|EQN*){the:0}
-(a|an _NNS|NNPS*){the:0, err:1}
-(some _NN|NNS*){exists:1,quant:1}
-(some|any|all|each|many _EQN*){quant:1}
-(some|any|all|each|many|one of _{subj:1}*){quant:1}
-(some|any|all|each|many|one of us|them*){quant:1,subj:1,gsp:NN}
-(for [all _{subj:1,many:1}*]){all:1,quant:1}
-(for [any|each|every _{subj:1}*]){all:1,quant:1}
-(the _{subj:1}*){the:1}
+from grammar import grammar_str
+grammar = parse_grammar(grammar_str)
 
 
-_{subj:1}* _VBN|VBG{subj_last:1}
-
-(in* comparison to){ps:null,join_right:subj}
-
-(and* , _RB{leaf:1} ,)
-(or* , _RB{leaf:1} ,)
-
-%(!and|or [_NN|NNS|NNP|NNPS{and:null,or:null} , _NN|NNS|NNP|NNPS*]){comma: 1}
-(_NN|NNS|NNP|NNPS{comma:1,and:null,or:null} , and _NN|NNS|NNP|NNPS*){and: 1, many: 1}
-(_NN|NNS|NNP|NNPS{comma:1,and:null,or:null} , or _NN|NNS|NNP|NNPS*){or: 1}
-^(!and|or [_NN|NNS|NNP|NNPS{the:null} and _NN|NNS|NNP|NNPS{the:null}*]){and: 1, many: 1}
-^(!and|or [_NN|NNS|NNP|NNPS{the:{0,1}} and _NN|NNS|NNP|NNPS{the:{0,1}}*]){and: 1, many: 1}
-^(!and|or [_NN|NNS|NNP|NNPS{the:null} or _NN|NNS|NNP|NNPS{the:null}*]){or: 1}
-^(!and|or [_NN|NNS|NNP|NNPS{the:{0,1}} or _NN|NNS|NNP|NNPS{the:{0,1}}*]){or: 1}
-^([_NN|NNS|NNP|NNPS{the:null,and:null,or:null}* and _NN|NNS|NNP|NNPS{the:null}] !_VB|VBD|VBZ|VBP){and: 1, many: 1}
-^([_NN|NNS|NNP|NNPS{the:{0,1},and:null,or:null}* and _NN|NNS|NNP|NNPS{the:{0,1}}]  !_VB|VBD|VBZ|VBP){and: 1, many: 1}
-^([_NN|NNS|NNP|NNPS{the:null,and:null,or:null}* or _NN|NNS|NNP|NNPS{the:null}]  !_VB|VBD|VBZ|VBP){or: 1}
-^([_NN|NNS|NNP|NNPS{the:{0,1},and:null,or:null}* or _NN|NNS|NNP|NNPS{the:{0,1}}]  !_VB|VBD|VBZ|VBP){or: 1}
-
-(!and|or [_VBN{and:null,or:null} , _VBN*]){comma: 1}
-(_VBN{comma:1,and:null,or:null} , and _VBN*){and: 1}
-(_VBN{comma:1,and:null,or:null} , or _VBN*){or: 1}
-(_VBN{and:null,or:null} and _VBN*){and: 1}
-^(_VBN{and:null,or:null}* and _VBN){and: 1}
-(_VBN or _VBN*){or: 1}
-^(_VBN* or _VBN){or: 1}
-
-^(!and|or [_EQN{and:null,or:null} , _EQN*]){comma: 1}
-^(_EQN{and:null,or:null}* , _EQN){comma: 1}
-^(_EQN{comma:1,and:null,or:null} , and _EQN*){and: 1, many: 1}
-^(_EQN{comma:1,and:null,or:null} , or _EQN*){or: 1}
-^(_EQN{comma:null} , and _EQN*){and: 1, many: 1, err: "redundant ',' before and"}
-^(_EQN{comma:null} , or _EQN*){or: 1, err: "redundant ',' before or"}
-^(!and|or [_EQN and _EQN*]){and: 1, many: 1}
-^(!and|or [_EQN or _EQN*]){or: 1}
-^(_EQN* and _EQN){and: 1, many: 1}
-^(_EQN* or _EQN){or: 1}
-(either _{or:1}*)
-
-([_{subj:1}*] !_{of_type:1}){of_arg:1}
-(_{gsp:NN}* _{of_type:1} _{of_arg:1}){of_arg:1}
-
-^(_{and:1}* , respectively){resp:1}
-^(_{or:1}* , respectively){resp:1}
-^(_{and:1}* respectively){resp:1,err:"',' expected before 'respectively'"}
-^(_{or:1}* respectively){resp:1,err:"',' expected before 'respectively'"}
-
-(_JJ|DT [_VBG _{subj:1}*])
-
-^(_{gsp:VB,what:null}* _DT){what:1}
-^(_VBD{what:null}* _NN){what:1,canbe:NN}
-^(_VBD{what:null}* _NNS){what:1,canbe:NNS}
-^(_VBD{what:null}* _NNP){what:1,canbe:NNP}
-^(_VBD{what:null}* _NNPS){what:1,canbe:NNPS}
-^(_{gsp:VB,what:null}* _{subj:1}){what:1}
-^(_{gsp:VB,whole:0}* : _EQN){what:1}
-^(_{gsp:NN}* : _{subj:1,comma:1})
-^(_{gsp:NN}* : _{subj:1,and:1})
-(_{subj:1}*){can_be_what:1}
-(us|me|him|her|it|them*){can_be_what:1}
-^([_VBG{what:null}* _RB] _{can_be_what:1})
-^(_VBG{what:null}* _{subj:1}){what:1}
-^(_{gsp:VB,what:null}* us|me|him|her|it|them|itself|himself|myself|herself|themselves){whom:1}
-^(_VBG{what:null}* us|me|him|her|it|them|itself|himself|myself|herself|themselves){whom:1}
-
-_{gsp:VB}* _VBG
-_MD _{gsp:VB}*
-has|have{leaf:1}* _VBN|VBD
-(has|have{leaf:1}* _{gsp:VB,whole:0}){err: "possible wrong verb form after 'has/have'"}
-
-^(is|are|am|be|been|was|were{leaf:1}* _JJ|JJR|JJS|VBN){jprop:1}
-^(do|does|was|were{leaf:1}* _VB|VBP|VBZ|VBD)
-
-^_{accept_to:1}* _TO _{subj:1}
-^_{accept_to:1}* _TO us|me|him|her|it|them
-(_CD _{subj:1,the:null}*){count:1}
-(_IN [_EQN{leaf:1} _{subj:1,many:1,the:null}*]){count:1}
-(_IN [_EQN{leaf:1} _{subj:1,many:0,the:null}*]){count:1,err:"'s' expected after unknows count specified by formula"}
-(one of _{subj:1}*){many:0}
-
-^_{gsp:{VB},that:null}* _RB _IN _{subj:1}
-^_{gsp:{VB,NN},that:null}* _IN _{subj:1}
-^_{gsp:{VB}}* _RB _RP _{subj:1}
-^_{gsp:{VB}}* _RP _{subj:1}
-^_{gsp:{VB},that:null}* , like _{subj:1}
-^_{gsp:{NN},that:null}* _OF _{subj:1}
-^_{gsp:{VB,NN},that:null}* _IN|OF _DT of _{subj:1}
-^_{gsp:VB}* _STD{gsp:RB,has_prep:1}
-^_{gsp:{VB,JJ}}* _{join_right:{nn,subj}} _{subj:1}
-^_{gsp:{VB,NN},that:null}* _IN|OF _VBG
-^_{gsp:NN}* _VBG|VBN _IN|OF _{subj:1}
-^_{gsp:NN}* , _VBG|VBN _IN|OF _{subj:1}
-^_{gsp:NN}* _VBG|VBN{what:1}
-%^_{gsp:NN}* _VBG _{subj:1}
-^_VBG* _TO _{subj:1}
-^(_{gsp:VB}* _TO _VB)
-
-^(_{gsp:VB,what:null}* _{subj:1}){what:1}
-^(_{gsp:VBG,what:null}* _{subj:1}){what:1}
-
-(_RB and _RB*){and: 1}
-
-_RB _{gsp:VB}*
-^(_RB _VBG|VBN*)
-^(_RB _JJ|JJR|RB|RBR*)
-^(_RB _IN|OF*)
-
-(_JJR{than:null}* than _{subj:1}){than:1}
-(more|less{than:null}* _JJ than _{subj:1}){ps:JJR, than:1}
-(more|less{than:null}* _RB than _{subj:1}){than:1}
-(_JJR{than:null}* then _{subj:1}){than:1,err:"'than' expected instead of 'then'"}
-^(_{subj:1}* _JJR{than:1})
-^(_RBR _JJ|JJR|RB*)
-
-^(_NN|NNS|NNP|NNPS{with_formula:null,with_number:null}* _CD){with_number:1}
-^(_{subj:1}* but _{subj:1}){butsubj:1}
-
-(_JJ _EQN*){subj:1,gsp:NN}
-
-(_{}* _CITE){cite:1}
-%#
-(_VB , _VB*){comma: 1}
-(_VB{comma:1} , and _VB*){and: 1}
-(_VB{comma:1} , or _VB*){or: 1}
-(_VB and _VB*){and: 1}
-(_VB or _VB*){or: 1}
-(_VB or _VB*){or: 1}
-^(_VBG{gsp:VB}* and _VBG{gsp:=VB,accept_to:=1}){and:1}
-^(_VBG{gsp:VB}* or _VBG{gsp:=VB,accept_to:=1}){or:1}
-(_VBG{gsp:null}* and _VBG{gsp:null}){and:1}
-(_VBG{gsp:null}* or _VBG{gsp:null}){or:1}
-
-%#
-let* _{gsp:VB,whole:0}
-%#
-([_{canbe:NN}*] _{gsp:VB,whole:0}){ps:NN,subj:1}
-([_{canbe:NNS}*] _{gsp:VB,whole:0}){ps:NNS,subj:1}
-([_{canbe:NNP}*] _{gsp:VB,whole:0}){ps:NNP,subj:1}
-([_{canbe:NNPS}*] _{gsp:VB,whole:0}){ps:NNPS,subj:1}
-
-([_{subj:1}* _VBD{whole:0,ps:=VBN}] _VB|VBZ|VBP{whole:0})
-(no _{subj:1} _{gsp:VB,whole:0}*){whole:1,neg:1}
-(_{subj:1} _{gsp:VB,whole:0}*){whole:1}
-%^(_{subj:1,that_arg:1}* _{gsp:VB,whole:0}){whole:1}
-(no _{can_p:1} _{gsp:VB,whole:0}*){whole:1,neg:1}
-(_{can_p:1} _{gsp:VB,whole:0}*){whole:1}
-(_JJ is|are*){whole:1,def:1}
-(_SOL [_VB|VBP|VBD|VBZ{gsp:VB,whole:0}*]){whole:1}
-
-^(_{gsp:VB,whole:1}* ,|and therefore|hence|thus|so _{at_end:1}){dep:hence,at_end:1}
-(therefore|thus|hence _{gsp:VB,whole:1}*){hence:1}
-(therefore|thus|hence , _{gsp:VB,whole:1}*){hence:1}
-(_SOL [then _{gsp:VB,whole:1}*]){hence:1}
-%#
-(_SOL [_RB , _{gsp:VB}*])
-(, _RB , _{gsp:VB}*)
-_{vvod:1} , _{gsp:VB}*
-(_{vvod:1} _{gsp:VB}*){err:"',' expected"}
-%#
-_IN _{subj:1} _VB|VBP|VBZ|VBD{whole:1}*
-(_SOL [_IN _{subj:1} , _VB|VBP|VBZ|VBD{whole:1}*])
-(_{subj:1} [, _IN _{subj:1} , _VB|VBP|VBZ|VBD{whole:0}*])
-(which [, _IN _{subj:1} , _VB|VBP|VBZ|VBD{whole:0}*])
-
-(there _{gsp:VB}*){whole:1}
-(_{gsp:NN}*){accept_to:1}
-(_{gsp:VB}* _RB)
-%#
-(_VB , _VB*){comma: 1}
-(_VB{comma:1} , and _VB*){and: 1}
-(_VB{comma:1} , or _VB*){or: 1}
-^(_{gsp:VB,whole:0}* and _{gsp:VB,whole:0}){and: 1}
-^(_{gsp:VB,whole:0}* , and _{gsp:VB,whole:0}){and: 1}
-(_{gsp:VB,whole:1} and _{gsp:VB,whole:1}*){and: 1}
-^(_{gsp:VB,whole:0}* or _{gsp:VB,whole:0}){or: 1}
-^(_{gsp:VB,whole:0}* , or _{gsp:VB,whole:0}){or: 1}
-(_{gsp:VB,whole:1} or _{gsp:VB,whole:1}*){or: 1}
-%(_VB or _VB*){or: 1}
-^(_NN|NNS|NNP|NNPS{and:null,or:null}* , _NN|NNS|NNP|NNPS){comma: 1}
-^(_NN|NNS|NNP|NNPS* and _NN|NNS|NNP|NNPS){and: 1, many: 1}
-^(_NN|NNS|NNP|NNPS* or _NN|NNS|NNP|NNPS){or: 1}
-^(_NN|NNS|NNP|NNPS* , and _NN|NNS|NNP|NNPS){and: 1, many: 1}
-^(_NN|NNS|NNP|NNPS* , or _NN|NNS|NNP|NNPS){or: 1}
-
-
-^(_NN|NNS{which:null}* which _{gsp:VB}){which:1}
-^(_NNP|NNPS{which:null}* who _{gsp:VB,whole:0}){which:1}
-^(_{subj:1,which:null}* which _{gsp:VB}){which:1}
-^(_NN|NNS{which:null}* , which _{gsp:VB}){which:1}
-^(_NNP|NNPS{which:null}* , who _{gsp:VB,whole:0}){which:1}
-^(_{subj:1,which:null}* , which _{gsp:VB}){which:1}
-
-([_{whole:1}*] _EOL){at_end:1}
-(_{gsp:VB,whole:0}* how to _{gsp:VB}){dep:howto}
-(_{gsp:VB,whole:0}* how _{whole:1}){dep:how}
-(_{gsp:VB,whole:0}* , how _{whole:1}){dep:how}
-^(_{that:can_join}* _{whole:1}){that:none,dep:that}
-^(_{gsp:VB,whole:0}* that _{whole:1}){dep:that}
-^(_{gsp:NN}* that _{gsp:VB})
-^(_{gsp:VB,whole:0}* when _{whole:1}){dep:when}
-(_{gsp:VB,whole:1}* , so that _{whole:1}){dep:sothat}
-(_{gsp:VB,whole:1}* so that _{whole:1}){dep:sothat}
-^(_{gsp:NN}* , _SUCHTHAT _{at_end:1}){at_end:1,dep:suchthat}
-^(_{gsp:NN}* _SUCHTHAT _{at_end:1}){at_end:1,dep:suchthat}
-^(_{gsp:VB,whole:0}* whether _{at_end:1}){dep:whether}
-
-^(that _VBG|NN|NNS|NNP|NNPS{the:null}*){gsp:NN,subj:1,that_arg:1}
-
-(if|when _{whole:1}* then _{whole:1}){dep:if_then}
-(if|when _{whole:1}* , then _{whole:1}){dep:if_then}
-(when _{whole:1}* , _{whole:1}){dep:if_then}
-(when _{whole:1}* _{whole:1}){dep:if_then}
-(if _{whole:1}* _{whole:1}){dep:if_then,err:"',', 'or', 'and' or 'then' expected"}
-(if _{whole:1}* , _{whole:1}){dep:if_then,err:"',', 'or', 'and' or 'then' expected"}
-([_{gsp:VB,whole:1}* if _{whole:1}] !then){dep:if}
-([_{gsp:VB,whole:1}* , if _{whole:1}] !then){dep:if}
-
-(_{gsp:VB,whole:1}* though|before|after|as _{gsp:VB,whole:1,at_end:1}){dep:infix,at_end:1}
-([_{gsp:VB,whole:1}* as _EQN] _EOL){dep:as_limit,at_end:1}
-(though|before|after|as _{whole:1} _{whole:1}*){dep:prefix}
-(though|before|after|as _{whole:1} , _{whole:1}*){dep:prefix}
-
-(_{gsp:VB,whole:1}* where _{whole:1}){dep:where}
-(_{gsp:VB,whole:1}* , where _{whole:1}){dep:where}
-(_{gsp:VB,whole:1}* since _{gsp:VB,whole:1,at_end:1}){dep:since,at_end:1}
-(_SOL [since _{whole:1} _{whole:1}*]){dep:since}
-(_SOL [since _{whole:1} , _{whole:1}*]){dep:since}
-(_SOL [since _{whole:1} then _{whole:1}*]){dep:since}
-(_SOL [since _{whole:1} , then _{whole:1}*]){dep:since}
-(_{gsp:VB,whole:1}* _{due_to:1} _{gsp:VB,whole:1,at_end:1}){dep:dueto,at_end:1}
-(_{gsp:VB,whole:1}* , _{due_to:1} _{gsp:VB,whole:1,at_end:1}){dep:dueto,at_end:1}
-(_{gsp:VB,whole:1}* because _{gsp:VB,whole:1,at_end:1}){dep:because,at_end:1}
-(_{gsp:VB,whole:1}* , because _{gsp:VB,whole:1,at_end:1}){dep:because,at_end:1}
-(_{gsp:VB,whole:1}* in order to _{gsp:VB}){dep:goal}
-(_{gsp:VB,whole:1}* , in order to _{gsp:VB}){dep:goal}
-
-(is* why _{whole:1}){dep:reason}
-
-(for _{subj:1} _{gsp:VB,whole:1}*){for:1}
-(for _{subj:1} , _{gsp:VB,whole:1}*){for:1}
-(to _VB _{gsp:VB,whole:1}*){to:1}
-(to _VB , _{gsp:VB,whole:1}*){to:1}
-(_{whole:1} but* _{whole:1}){whole:1,dep:but}
-(_{whole:1} , but* _{whole:1}){whole:1,dep:but}
-(_{whole:1} , while* _{whole:1}){whole:1,dep:while}
-(_{whole:1} while* _{whole:1}){whole:1,dep:while}
-([_{whole:1}* , _VBG] _EOL){comment:1}
-(_VBG , _{whole:1}*){how:1}
-(_VBN{whole:0} _{whole:1}*){dep:cond}
-(_VBN{whole:0} , _{whole:1}*){dep:cond}
-([_{whole:1}* , _IE _{whole:1}] _EOL){ie:1}
-(_{whole:1}* , _IE _{whole:1} ,){ie:1}
-([_{whole:1}* _IE _{whole:1}] _EOL){ie:1,err:"',' before 'that is' or 'i.e.' expected"}
-
-(_{whole:1} , _{whole:1}*){comma:1}
-(_{whole:1}* : _{whole:1}){compound:colon}
-(_{whole:1}* ; _{whole:1}){compound:semicolon}
-(_{whole:1} , and _{whole:1}*){and:1}
-(_{whole:1} , or _{whole:1}*){or:1}
-(_{whole:1} and _{whole:1}*){and:1}
-(_{whole:1} or _{whole:1}*){or:1}
-(let*){whole:1}
-
-^(_{gsp:NN}* _SUCHTHAT _{whole:1}){dep:suchthat}
-^(_{gsp:NN}* _SUCHTHAT _EQN){dep:suchthat}
-(_VBG _{gsp:VB,whole:1}*){dep:how}
-(_EQN*){whole:1}
-
-(_{vvod:1} _{whole:1}*)
-(_{vvod:1} , _{whole:1}*)
-(_IN _{subj:1} , _VB|VBP|VBZ|VBD{whole:1}*)
-
-(_CD){subj:1}
-^(_{gsp:VB,what:null}* that){what:1,that:1}
-(which*){ps:DT}
-(of){ps:IN}
-(_{}* \( _{} \)){comment:1,err:cannot determine comment type}
-(_{}* \( _{} _{} \)){comment:1,err:comment not fully parsed}
-
-^(_EQN* _CD)
-^(_EQN _CD*)
-^(_CD _EQN*)
-^(_CD* _EQN)
-(: _EQN*){eqcolon:1}
-%(_VBD{whole:0}){ps:VBN}
-(_VB|VBP{whole:0}){whole:1}
-#
-([_{gsp:VB,whole:1}* _CITE] _EOL){cite:1}
-(_SOL _{whole:1}* _EOL){sentense:1}
-(_SOL _{}* _EOL){sentense:1,err:sentense is incomplete}
-"""
-
-
-math_env_names = {"equation", "equation*", "align", "align*", "eqnarray", "eqnarray*", "multline", "multline*"
+math_env_names = {"equation", "equation*", "align", "align*", "eqnarray", "eqnarray*", "multline", "multline*",
                   "tikzcd", "tikzcd*", "gather", "gather*"}
 
 
-grammar = parse_grammar(grammar_str)
-
+sufficient_pos_set = {'FW', 'JJ', 'JJR', 'JJS', 'MD', 'NN', 'NNP', 'NNPS', 'NNS', 'RB', 'RBR', 'RBS', 'RP', 'VB', 'VBD', 'VBG', 'VBN', 'VBP', 'VBZ'}
 
 def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
     document = TexDocument(filename=file_name)
@@ -1310,9 +982,11 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
     # collect text and math environments
     text_segments = []
     eqn_counter = 0
-    for env in document.items_and_envs([TextFragment], math_env_names):
+    for env in document.items_and_envs([TextFragment, BibliographyEnvironment], math_env_names):
         if isinstance(env, TextFragment):
             text_segments.append(env.remove_formatting_macros())
+        elif isinstance(env, BibliographyEnvironment):
+            pass
         else:
             eqn_counter += 1
             text_segments.append(f"equation_{eqn_counter}")
@@ -1322,15 +996,33 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
 
     text = " ".join(text_segments)
 
-    #for fragment in document.text_fragments():
+    # for fragment in document.text_fragments():
     sent_tokens = tokenize_text_nltk(text)
+    uncommon_words = defaultdict(lambda: 0)
+    errors = []
     for i, sent in enumerate(sent_tokens):
         if pr:
             print(f"{i+1}. {' '.join(x[0] for x in sent)}")
+            for token, pos in sent:
+                if token and token[0].isalpha() and token[0].islower() and pos in sufficient_pos_set \
+                        and pos in dict_pos_set \
+                        and not token in stop_words:
+                    if token not in pos_dict:
+                        print(f"Warning: uncommon word {token} in \"{' '.join(tok for tok, _ in sent)})\"")
+                        uncommon_words[token] += 1
+
         parse_trees = parse_sentense(sent, grammar, debug=False)
         if pickle_file:
             with open(pickle_file, 'wb') as f:
                 pickle.dump(parse_trees, f)
+        for tree in parse_trees:
+            if isinstance(tree, ParseTree) and tree.metadata.get('err', None) is not None:
+                err = tree.metadata['err']
+                if all(x.metadata.get('err', None) != err for x in tree.children):
+                    stxt = " ".join(x.get_word() for x in tree if isinstance(x, Token))
+                    if pr:
+                        print(f'error: {err}; in "{stxt}")')
+                    errors.append([err, stxt])
         if len(parse_trees) != 1:
             with open('failed.txt', 'a' if len(failed) else 'w') as f:
                 f.write(f"{len(failed)+1}. {' '.join(x[0] for x in sent)}\n")
@@ -1348,15 +1040,29 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
             break
 
     if pr:
-        for i, sent, parse_trees in failed:
-            print(f'{i}. {sent}')
-            for tree in parse_trees:
-                tree.print_tree()
-            print()
-
-    if pr:
         print("Parsed:", len(parsed))
         print("Failed:", len(failed))
+        #     for i, sent, parse_trees in failed:
+        #         print(f'{i}. {sent}')
+        #         for tree in parse_trees:
+        #             tree.print_tree()
+        #         print()
+
+        if uncommon_words:
+            print('\nFollowing uncommon words were used:')
+            for word, cnt in uncommon_words.items():
+                if cnt > 1:
+                    print(f'{word} ({cnt} times)')
+                else:
+                    print(word)
+            print()
+
+        if errors:
+            print('Following errors were found:')
+            for err, sent in errors:
+                print(f'  {err}: "{sent}"')
+            print()
+
     return len(parsed), len(failed)
 
 
@@ -1632,9 +1338,14 @@ def test_trees(repeat_threshold=10):
 
 
 if __name__ == '__main__':
-    test_trees()
+    #test_trees()
     #test_full_tex_file('tests/main.tex')
+    #test_full_tex_file('tests/Quantum Sampling/main.tex')
+    #test_full_tex_file('tests/Quantum Verification/main.tex')
+    #test_full_tex_file('tests/LTC (stoc2022)/main.tex')
+    test_full_tex_file('tests/CircuitModelsHyperbolicEng/main.tex')
     #test_full_tex_file('tests/balanced_product/balanced_product_codes.tex')
+    #test_full_tex_file('tests/Convolution_maximizers_DD-22/main.tex')
     #test_article_dir("/Users/gleb/PycharmProjects/ineq-prover/prover/arxiv/0705/0705.0968")
     #test_dir_with_articles_parallel("/Users/gleb/PycharmProjects/ineq-prover/prover/arxiv/0705")
     #test_tar_with_articles_parallel("/Users/Gleb/Desktop/Solver/2020-09-08-arxiv-extracts-nofallback-until-2007-068.tar", 100000)

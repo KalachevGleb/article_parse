@@ -145,11 +145,12 @@ class BibItem(TexItem):
 
 
 class BibliographyEnvironment(TexEnvBase):
-    def __init__(self, name, parent, items=None):
+    def __init__(self, name, parent, items=None, approx_num_items=9):
         super().__init__(name, parent)
         # convert tex items to bib items; split TextFragments by \item
         if items is None:
             items = []
+        self.approx_num_items = approx_num_items
         self.item_by_label = {}
         self.items = []
         for item in items:
@@ -187,6 +188,9 @@ class BibliographyEnvironment(TexEnvBase):
         for i, item in enumerate(self.items):
             res += '  ' + str(i + 1) + ' ' + str(item) + '\n'
         return res
+
+
+register_standard_environment(['thebibliography'], [True], BibliographyEnvironment)
 
 
 # Class for formatting environments

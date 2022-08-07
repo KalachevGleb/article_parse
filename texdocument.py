@@ -43,7 +43,7 @@ def preprocess_tex_file(text: str, commands: TexDefinedCommands, env_stack=None)
         text = re.sub(r'(?<!\\)%.*?\n', '', text)
         #text = re.sub(r'%.*\n', '', text)
         # remove tex comments of the form \iffalse ... \fi
-        text = re.sub(r'(?<!\\)\\iffalse.*\\fi', '', text, flags=re.DOTALL)
+        # text = re.sub(r'(?<!\\)\\iffalse.*\\fi', '', text, flags=re.DOTALL)
     text = TexStream(text, commands)
     old_pos = 0
     if env_stack is None:
@@ -186,6 +186,11 @@ def preprocess_tex_file(text: str, commands: TexDefinedCommands, env_stack=None)
                 output.append([' ', commands.add_footnote(TextFragment(body)), ' '])
             except TexError:
                 print('Error: cannot read body of \\' + command)
+        elif command == 'iffalse':
+            while (tok:=text.read_token()) != '\\fi':
+                if tok is None:
+                    print('Error: \\iffalse is not closed')
+                    break
         else:
             output[-1].append(tok)
         old_pos = text.pos
@@ -282,16 +287,19 @@ class TextFragment(TextFragmentBase):
         # remove formatting macros
         res_tokens = []
         text = TexStream(self.text, TexDefinedCommands())
-        while text.next_token is not None:
-            tok = text.read_token()
-            if tok in formatting_tex_macros_1arg:
-                arg, = text.read_args([True])
-                res_tokens.extend(arg)
-            elif tok in formatting_tex_macros_no_arg:
-                #if tok[-1].isalpha():
-                text.skip_ws()
-            else:
-                res_tokens.append(tok)
+        try:
+            while text.next_token is not None:
+                tok = text.read_token()
+                if tok in formatting_tex_macros_1arg:
+                    arg, = text.read_args([True])
+                    res_tokens.extend(arg)
+                elif tok in formatting_tex_macros_no_arg:
+                    #if tok[-1].isalpha():
+                    text.skip_ws()
+                else:
+                    res_tokens.append(tok)
+        except TexError as e:
+            print(f'Error: {e}')
         return tokens_to_text(res_tokens)
 
 
@@ -402,10 +410,10 @@ predefined_tex_macros = r"""
 \newcommand{\maketitle}{}
 \newcommand{\IEEEPARstart}[2]{#1#2}
 % following commands should be replaced
-\newcommand{\cite}[2][]{@cite}
-\newcommand{\ref}[1]{@ref}
-\newcommand{\eqref}[1]{@eqref}
-\newcommand{\Cref}[1]{@cref}
+\newcommand{\cite}[2][]{@cite }
+\newcommand{\ref}[1]{@ref }
+\newcommand{\eqref}[1]{@eqref }
+\newcommand{\Cref}[1]{@cref }
 \newcommand{\label}[1]{}
 \newcommand{\setcounter}[2]{}
 \newcommand{\citep}[3][][]{\cite[#1]{#3}}
@@ -425,6 +433,9 @@ predefined_tex_macros = r"""
 \newcommand{\newline}{}
 \newcommand{\pagebreak}{}
 \newcommand{\S}{Paragraph}
+\newcommand{\usetikzlibrary}[2][]{}
+\newcommand{\tikzset}[1]{}
+\newcommand{\theoremstyle}[1]{}
 """
 
 
@@ -469,17 +480,28 @@ class TexDocument(TexItem):
         with open('preprocessed.tex', 'w') as f:
             f.write(text)
         # parse text
-        begin_document = text.find(r'\begin{document}')
-        end_document = text.find(r'\end{document}')
+        # find begin document using regex
+        begin_match = re.search(r'\\begin[ \t\n\r]*[{]document[}]', text)
+        if begin_match is None:
+            begin_document = -1
+        else:
+            begin_document = begin_match.end()
+        # find end document using regex
+        end_match = re.search(r'\\end[ \t\n\r]*[{]document[}]', text)
+        if end_match is None:
+            end_document = -1
+        else:
+            end_document = end_match.start()
+
         preamble = ""
         if begin_document != -1 and end_document != -1:
-            preamble = text[:begin_document]
-            text = text[begin_document + len(r'\begin{document}'):end_document]
+            preamble = text[:begin_match.start()]
+            text = text[begin_document:end_document]
         else:
             print('Error: cannot find begin{document} or end{document}')
 
         # remove tables and figures from text and save them in self.tables and self.figures
-        table_regexp = r'\\begin[{]table[}](.*)\\end[{]table[}]'
+        table_regexp = r'\\begin[{]table[*]?[}](.*)\\end[{]table[*]?[}]'
         for match in re.finditer(table_regexp, text, re.DOTALL):
             table_name = find_label(match.group(1))
             if table_name is None:
@@ -490,7 +512,7 @@ class TexDocument(TexItem):
                         break
             self.tables[table_name] = match.group(1)
         text = re.sub(table_regexp, '', text, flags=re.DOTALL)
-        figure_regexp = r'\\begin[{]figure[}](.*)\\end[{]figure[}]'
+        figure_regexp = r'\\begin[{]figure[*]?[}](.*)\\end[{]figure[*]?[}]'
         for match in re.finditer(figure_regexp, text, re.DOTALL):
             figure_name = find_label(match.group(1))
             if figure_name is None:
@@ -500,14 +522,11 @@ class TexDocument(TexItem):
                     if figure_name not in self.figures:
                         break
             self.figures[figure_name] = match.group(1)
-        text = re.sub(r'\\begin[{]figure[}].*?\\end[{]figure[}]', '', text, flags=re.DOTALL)
+        text = re.sub(r'\\begin[ \t\n\r]*[{]figure[*]?[}].*?\\end[ \t\n\r]*[{]figure[*]?[}]', '', text, flags=re.DOTALL)
         # remove labels
-        text = re.sub(r'\\label[{].*?[}]', '', text)
+        text = re.sub(r'\\label[ \t\n\r]*[{].*?[}]', '', text)
         # replace ~ by space
         text = text.replace('~', ' ')
-        # regular expression for tex formulas
-        tex_formula_regex = r'(\$(([^$]|\\\$)+)\$|\$\$(.+)\$\$|\\\[(.*)\\\]|[\\]begin[{](equation)|(align)|(multline)|(eqnarray)[*]?[}](.*)[\\]end[{](equation)|(align)|(multline)|(eqnarray)[*]?[}])'
-        tex_formula_regex = re.compile(tex_formula_regex, re.DOTALL)
 
         # find \appendix command and split text into main part and appendix
         appendix_pos = text.find(r'\appendix')
@@ -552,10 +571,10 @@ class TexDocument(TexItem):
         self.sections.print_structure(indent + "    ", counters)
         print(indent + "  appendices:")
         self.appendices.print_structure(indent + "    ", counters)
-        if self.references:
-            print(indent + "  references:")
-            for ref in self.references:
-                print(indent + "    " + ref)
+        # if self.references:
+        #     print(indent + "  references:")
+        #     for ref in self.references:
+        #         print(indent + "    " + ref)
 
     def print_document_info(self):
         self.print_structure("", defaultdict(lambda: 0))
