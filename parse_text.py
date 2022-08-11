@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import pickle
 import re
+import shutil
 from collections import defaultdict
 from copy import copy
 from typing import List, Tuple, Optional, Union, Dict
@@ -24,11 +25,58 @@ def get_infinitive(word):
     return stemmer.stem(word)
 
 
+vbp_set = set()
+vbd_set = set()
+vbn_set = set()
+vb_irreg_set = set()
+#vb_irreg_set_ext = {}
+
+
+mobypos_dict = {}
+mobypos_comb_dict = {}
+
+with open('dicts/pos_other_exceptions.yml') as f:
+    data = yaml.load(f, Loader=yaml.CSafeLoader)
+    pos_exceptions = {x: v for k, v in data.items() for x in k.split(',')}
+
+
+def load_mobypos_dict():
+    with open('dicts/mobypos.pickle', 'rb') as f:
+        global mobypos_dict
+        global mobypos_comb_dict
+        mobypos_dict, mobypos_comb_dict = pickle.load(f)
+
+
+def load_irreg_vergs():
+    #prefixes = ['a', 'be', 'in', 'inter', 'mis', 'off', 'over', 'out', 'pre', 're', 'un', 'under', 'up', 'with', '']
+    with open('dicts/irregular_verbs.txt') as f:
+        for line in f:
+            vbp, vbd, vbn, *pref = line.split()
+            vbp_set.update(vbp.split('/'))
+            vbd_set.update(vbd.split('/'))
+            vbn_set.update(vbn.split('/'))
+            if pref:
+                for p in pref[0].split(','):
+                    vbp_set.update([p+x for x in vbp.split('/')])
+                    vbd_set.update([p+x for x in vbd.split('/')])
+                    vbn_set.update([p+x for x in vbn.split('/')])
+    global vb_irreg_set
+    vb_irreg_set = vbp_set|vbn_set|vbd_set
+    #global vb_irreg_set_ext
+    #vb_irreg_set_ext = {prefix+vb: vb for prefix in prefixes for vb in vb_irreg_set}
+
+
+load_irreg_vergs()
+load_mobypos_dict()
+
+
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize, sent_tokenize
 
-stop_words = set(stopwords.words('english')) | {'ref', 'cref', 'eqref', 'cite'}
+stop_words = set(stopwords.words('english')) | {'ref', 'cref', 'eqref', 'cite', 'hence',
+                                                'fix', 'put', 'let', 'consider', 'denote', 'define', 'introduce',
+                                                'find', 'imagine', 'note', 'observe', 'suppose'}
 
 
 with open('dict_2-4gram_10000-f.yml', 'r') as pos_dict_file:
@@ -37,43 +85,106 @@ with open('dict_2-4gram_10000-f.yml', 'r') as pos_dict_file:
         pos_dict[key] = {k: v for k, v in pos_dict[key].items() if v > 5}
 
 
+with open('dicts/prepositions.txt', 'r') as f:
+    prep_types = yaml.load(f, Loader=yaml.CSafeLoader)
+    prep_types = {prep: v for k, v in prep_types.items() for prep in k.split(',')}
+
+
 dict_pos_set = set(sum((list(v.keys()) for v in pos_dict.values()), []))
+
+
+modal_verbs = {'can', 'could', 'may', 'might', 'must', 'shall', 'should', 'will', 'would'}
+
+
+pos_to_mobipos = {
+    'NN': 'N',
+    'NNP': 'N',
+    'NNS': 'p',
+    'NNPS': 'p',
+    'JJ': 'A',
+    'JJR': 'A',
+    'JJS': 'A',
+    'RB': 'v',
+    'RBR': 'v',
+    'VB': 'Vti',
+    'DT': 'D',
+    'CD': 'M',
+}
+
+
+def can_be_pos_start(word, pos):
+    if pos in pos_to_mobipos and word in mobypos_dict:
+        return bool(set(pos_to_mobipos[pos]) & set(mobypos_dict[word]))
+    return any(key.startswith(pos) for key in pos_dict.get(word, {}))
+
+
+def can_be_pos(word, pos):
+    if pos in pos_to_mobipos and word in mobypos_dict:
+        return bool(set(pos_to_mobipos[pos]) & set(mobypos_dict[word]))
+    return pos in pos_dict.get(word, {})
 
 
 # detect possible part of speech of a word by its suffix
 def detect_pos_recommendation(word: str):
+    if '-' in word:
+        end = word.split('-')[-1]
+        if end:
+            return detect_pos_recommendation(end)
+    if word in pos_exceptions:
+        return [pos_exceptions[word]], {}
     pos = []
     neg = {}
+    if len(word) < 3:
+        return pos, neg
+
     if word.endswith('ing'):
-        if any(key.startswith('VB') for key in pos_dict.get(word[:-3], {})) or \
-                any(key.startswith('VB') for key in pos_dict.get(word[:-3]+'e', {})):
-            pos = ['VBG']
+        if can_be_pos_start(word[:-3], 'VB') or can_be_pos_start(word[:-3]+'e', 'VB') or \
+           len(word) > 5 and word[-5] == word[-4] and word[-4] in 'bcdfghjklmnpqrstvwxz' and can_be_pos_start(word[:-4], 'VB'):
+            #any(key.startswith('VB') for key in pos_dict.get(word[:-3], {})) or \
+                #any(key.startswith('VB') for key in pos_dict.get(word[:-3]+'e', {})):
+            pos += ['VBG']
     else:
         neg['VBG'] = 'VBD' if word.endswith('ed') else 'VBN' if word.endswith('en') else 'VBZ' if word.endswith('es') else 'VB'
 
     if word.endswith('ly'):
-        if any(key.startswith('JJ') for key in pos_dict.get(word[:-2], {})):
-            pos = ['RB']
+        if can_be_pos(word[:-2], 'JJ'): #any(key.startswith('JJ') for key in pos_dict.get(word[:-2], {})):
+            pos += ['RB']
         neg['JJ'] = 'RB'
 
-    if word.endswith('ed'):
-        if any(key.startswith('VB') for key in pos_dict.get(word[:-2], {})) or \
-                any(key.startswith('VB') for key in pos_dict.get(word[:-2]+'e', {})):
-            pos = ['VBD', 'VBN', 'JJ']
+    if word in modal_verbs:
+        return ['MD'], neg
 
-    if word.endswith('en'):
-        if any(key.startswith('VB') for key in pos_dict.get(word[:-2], {})) or \
-                any(key.startswith('VB') for key in pos_dict.get(word[:-2]+'e', {})):
-            pos = ['VBN', 'JJ']
+    if word in vb_irreg_set:
+        w = word  # if word in vb_irreg_set else vb_irreg_set_ext[word]
+        if w in vbp_set:
+            pos += ['VB', 'VBP']
+        if w in vbd_set:
+            pos += ['VBD']
+        if w in vbn_set:
+            pos += ['VBN']
+        for p in ['VB', 'VBP', 'VBD', 'VBN']:
+            if p not in pos:
+                neg[p] = pos[0]
+    else:
+        if word.endswith('ed'):
+            if can_be_pos_start(word[:-2], 'VB') or can_be_pos_start(word[:-2]+'e', 'VB') or \
+               word[-3:] == 'ied' and can_be_pos_start(word[:-3]+'y', 'VB') or \
+               len(word) > 4 and word[-4] == word[-3] and word[-3] in 'bcdfghjklmnpqrstvwxz' and can_be_pos_start(word[:-3], 'VB'):
+                pos += ['VBD', 'VBN', 'JJ']
+        else:
+            neg['VBD'] = 'VB'
+            neg['VBN'] = 'VB'
+
+        # if word.endswith('en'):
+        #     if any(key.startswith('VB') for key in pos_dict.get(word[:-2], {})) or \
+        #             any(key.startswith('VB') for key in pos_dict.get(word[:-2]+'e', {})):
+        #         pos = ['VBN', 'JJ']
     if word.endswith('er'):
-        if any(key.startswith('JJ') for key in pos_dict.get(word[:-2], {})) or \
-                any(key.startswith('JJ') for key in pos_dict.get(word[:-2]+'e', {})):
-            pos = ['JJR']
-        if any(key.startswith('RB') for key in pos_dict.get(word[:-2], {})) or \
-                any(key.startswith('RB') for key in pos_dict.get(word[:-2]+'y', {})):
+        if can_be_pos(word[:-2], 'JJ') or can_be_pos(word[:-2]+'e', 'JJ'):
+            pos += ['JJR']
+        if can_be_pos(word[:-2], 'RB') or can_be_pos(word[:-2]+'y', 'RB'):
             pos += ['RBR']
-        if any(key.startswith('VB') for key in pos_dict.get(word[:-2], {})) or \
-                any(key.startswith('VB') for key in pos_dict.get(word[:-2]+'e', {})):
+        if can_be_pos(word[:-2], 'VB') or can_be_pos(word[:-2]+'e', 'VB'):
             pos += ['NN']
     else:
         if word not in ('worse', 'less', 'more'):
@@ -81,41 +192,52 @@ def detect_pos_recommendation(word: str):
             neg['RBR'] = 'RB'
 
     if word.endswith('est'):
-        if any(key.startswith('JJ') for key in pos_dict.get(word[:-3], {})) or \
-                any(key.startswith('JJ') for key in pos_dict.get(word[:-3]+'e', {})):
-            pos = ['JJS']
+        if can_be_pos(word[:-3], 'JJ') or can_be_pos(word[:-3]+'e', 'JJ'):
+            pos += ['JJS']
     elif not word.endswith('st'):
         neg['JJS'] = 'JJ'
 
-    if word.endswith('s'):
-        if any(key.startswith('NN') for key in pos_dict.get(word[:-1], {})) or \
-                word[-3:] == 'ies' and any(key.startswith('NN') for key in pos_dict.get(word[:-3]+'y', {})) or \
-                word[-3:] in ('ses', 'xes', 'zes') and any(key.startswith('NN') for key in pos_dict.get(word[:-2]+'s', {})):
+    if len(word) > 2 and word.endswith('s'):
+        if can_be_pos(word[:-1], 'NN') or \
+                word[-3:] == 'ies' and can_be_pos_start(word[:-3]+'y', 'NN') or\
+                word[-3:] in ('ses', 'xes', 'zes') and can_be_pos_start(word[:-2]+'s', 'NN') or\
+                word[-4:] == 'ices' and can_be_pos_start(word[:-4]+'ex', 'NN'):
             if any(letter.isupper() for letter in word):
                 pos.append('NNPS')
             else:
                 pos.append('NNS')
-        if any(key.startswith('VB') for key in pos_dict.get(word[:-1], {})):
+        if can_be_pos_start(word[:-1], 'VB') or \
+                word[-3:] == 'ies' and can_be_pos_start(word[:-3] + 'y', 'VB') or \
+                word[-3:] in ('ses', 'xes', 'zes', 'oes') and can_be_pos_start(word[:-2], 'VB'):
             pos.append('VBZ')
     else:
         neg['VBZ'] = 'VB'
         neg['NNPS'] = 'NNP'
         if word[-1] == 'a':
-            if any(key.startswith('NN') for key in pos_dict.get(word[:-1]+'on', {})):
-                pos = ['NNS']
-        else:
+            if can_be_pos(word[:-1], 'NN'):
+                pos += ['NNS']
+        elif 'p' not in mobypos_dict.get(word, ''):
             neg['NNS'] = 'NN'
 
-    if word.endswith('ess'):
-        pos = ['NN']
+    if word.endswith('ness'):
+        pos += ['NN']
 
-    if word.endswith('ate'):
-        pos = ['VB', 'VBP', 'NN', 'JJ']
+    #if word.endswith('ate'):
+    #    pos = ['VB', 'VBP', 'NN', 'JJ']
 
     if word.endswith('ful'):
-        if any(key.startswith('NN') for key in pos_dict.get(word[:-3], {})) or \
-                any(key.startswith('NN') for key in pos_dict.get(word[:-3]+'e', {})):
-            pos = ['JJ']
+        if can_be_pos(word[:-3], 'NN') or can_be_pos(word[:-3]+'e', 'NN'):
+            pos += ['JJ']
+
+    sym_map = {'N': 'NN', 'p': 'NNS', 't': 'VB', 'i': 'VB', 'V': 'VB', 'A': 'JJ', 'v': 'RB','D': 'DT', 'M': 'CD'}
+    if word in mobypos_dict:
+        for sym in mobypos_dict[word]:
+            if sym in sym_map:
+                r = sym_map[sym]
+                r = neg.get(r, r)
+                if r not in pos:
+                    pos.append(r)
+
     return pos, neg
 
 
@@ -180,15 +302,15 @@ def replace_tex_formulas(text):
         fragments.append("formula___" + str(len(formulas)))
         formula = text[match.start():match.end()]
         formulas["formula___" + str(len(formulas))] = formula
-        znak = ''
+        symb = ''
         for c in formula[::-1]:
             if c == '}' or c.isalnum():
                 break
             elif c in '.,;:':
-                znak = c
+                symb = c
                 break
-        if znak:
-            fragments[-1] += ' ' + znak
+        if symb:
+            fragments[-1] += ' ' + symb
         elif '.' in formula or formula[-1] != '$' or formula[-2] == '$':
             for j in range(match.end(), len(text)):
                 if not text[j].isspace():
@@ -211,7 +333,7 @@ def tokenize_text_nltk(txt):
     res = []
     txt, formulas = replace_tex_formulas(txt)
     # remove all braces
-    replacements = {'{': '', '}': '', 'i.e.': 'ie', 'e.g.': 'eg', 'et al.': 'et_al', 'cf.': 'cf',
+    replacements = {'{': '', '}': '', 'i.e.': 'ie', 'i. e.': 'ie', 'e.g.': 'eg', 'e. g.': 'eg', 'et al.': 'et_al', 'cf.': 'cf',
                     'Fig.': 'Fig', 'fig.': 'Fig', 'Ref.': 'Ref', 'ref.': 'ref', 'Eq.': 'Eq', 'eq.': 'Eq',
                     'resp.': 'respectively'}
     txt, _ = replace_multiple(txt, replacements)
@@ -430,6 +552,15 @@ class ParseTreeNode:
     def get_word(self) -> str:
         pass
 
+    @property
+    @abc.abstractmethod
+    def text(self) -> str:
+        pass
+
+    @property
+    def arg_name(self):
+        return self.metadata.get('arg', None)
+
 
 # Token class, contains word and metadata from nltk tokenizer
 class Token(ParseTreeNode):
@@ -438,6 +569,8 @@ class Token(ParseTreeNode):
         self.word = word
         self.pos = pos
         self.metadata = copy(metadata)
+        if self.ps in ('IN', 'TO'):
+            self.metadata.update(prep_types.get(word, {}))
         self.metadata['leaf'] = 1
 
     def __str__(self):
@@ -466,16 +599,28 @@ class Token(ParseTreeNode):
     def __iter__(self):
         yield self
 
+    @property
+    def text(self):
+        return self.word
+
+    @property
+    def ps(self):
+        return self.metadata.get('ps', None)
+
+
 
 # Parse tree for natural language;
 # each leaf is a token (with meta data)
 # each internal node is a rule applied to a list of children; is can have main token
 class ParseTree(ParseTreeNode):
-    def __init__(self, token, rule=None, children=None, metadata=None, main_branch=None, level=None, rule_num=None):
+    def __init__(self, token, rule=None, children=None, metadata=None, main_branch=None, level=None, rule_num=None,
+                 chech_func=None, create_func=None):
         super().__init__()
         self.token: Optional[Token] = token if isinstance(token, Token) else None
         self.metadata = {} if token is None else copy(token.metadata if main_branch is None else children[main_branch].metadata)
         self.metadata['leaf'] = 0
+        if 'arg' in self.metadata:
+            del self.metadata['arg']
         if metadata is not None:
             self.metadata.update(metadata)
         self.rule = rule
@@ -483,6 +628,9 @@ class ParseTree(ParseTreeNode):
         self.children = children if children is not None else []
         self.level = level
         self.rule_num = rule_num
+        self.check_func = chech_func
+        if create_func is not None:
+            create_func(self)
 
     def __str__(self):
         if not self.children:
@@ -525,6 +673,24 @@ class ParseTree(ParseTreeNode):
     def get_word(self):
         #return self.token.word if self.token and not self.is_leaf() else ' '.join(c.get_word() for c in self.children)
         return self.token.word if self.token else ' '.join(c.get_word() for c in self.children)
+
+    @property
+    def text(self):
+        return " ".join(c.text for c in self.children)
+
+    def check(self):
+        for c in self.children:
+            if isinstance(c, ParseTree):
+                c.check()
+        if self.check_func is not None:
+            args = [c for c in self.children if c.arg_name is None]
+            kwargs = {c.arg_name: c for c in self.children if c.arg_name is not None and c.arg_name != '_'}
+            if isinstance(self.check_func, list):
+                for func in self.check_func:
+                    func(self, *args, **kwargs)
+            else:
+                self.check_func(self, *args, **kwargs)
+
 
 #
 # def remove_tree_node_right(path_to_node: List[ParseTree]):
@@ -647,7 +813,8 @@ class NegateRuleItem(RuleItem):
 
 
 class GrammarRule:
-    def __init__(self, name, items: List[RuleItem], main_token=None, metadata=None, interval=None, subtree=False, destruct=False, use_priority=False, text=""):
+    def __init__(self, name, items: List[RuleItem], main_token=None, metadata=None, interval=None, subtree=False,
+                 destruct=False, use_priority=False, text="", cond_func=None, postprocess_func=None, create_func=None):
         self.text = text
         self.name = name
         self.items = items
@@ -657,6 +824,9 @@ class GrammarRule:
         self.interval = interval if interval is not None else (0, len(items))
         self.subtree = 0
         self.use_priority = use_priority
+        self.cond_func = cond_func
+        self.postprocess_func = postprocess_func
+        self.create_func = create_func
         if subtree:  # if main_token is first, then the first item can be a subtree
             if main_token == 0:
                 self.subtree = 1  # 1 means left
@@ -713,6 +883,15 @@ class GrammarRule:
             if isinstance(item, RuleItemWithTags):
                 item.replace(node)
 
+    def match(self, *nodes: ParseTreeNode) -> Union[bool, List[ParseTreeNode]]:
+        if any(not x.match(node) for node, x in zip(nodes, self.items)):
+            return False
+        if self.cond_func:
+            args = [node for node in nodes if node.arg_name is None]
+            kwargs = {node.metadata['arg']: node for node in nodes if node.arg_name not in (None,'_')}
+            return self.cond_func(*args, **kwargs)
+        return True
+
 
 # Grammar class, consists of several sets of rules, each set has its level
 class Grammar:
@@ -766,15 +945,18 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                             # take into account rule priority
                             if rule.use_priority and found and (prev.level, prev.rule_num) < (level, rule_num):
                                 break
-                            if rule.items[0].match(curr) and all(x.match(parse_trees[i + j + 1]) for j, x in enumerate(rule.items[1:])):
-                                found = (prev, curr, idx)
+                            if mres := rule.match(curr, *parse_trees[i+1:i+len(rule.items)]):
+                            # if rule.items[0].match(curr) and all(x.match(parse_trees[i + j + 1]) for j, x in enumerate(rule.items[1:])):
+                                found = (prev, curr, idx, mres)
                         if found:
-                            prev, curr, i0 = found
+                            prev, curr, i0, mres = found
                             b, e = rule.interval
                             assert b == 0
                             rule.replace_items_tags([curr] + parse_trees[i + 1:i + len(rule.items)])
                             new_tree = ParseTree(curr.token, str(rule), [curr] + parse_trees[i + 1:i + e],
-                                                 metadata=rule.metadata, main_branch=rule.main_token - b, level=level, rule_num=rule_num)
+                                                 metadata=rule.metadata, main_branch=rule.main_token - b,
+                                                 level=level, rule_num=rule_num,
+                                                 chech_func=rule.postprocess_func, create_func=rule.create_func)
                             if debug:
                                 print(f'apply rule {rule} to {[curr] + parse_trees[i + 1:i + e]}: {new_tree}')
                             prev.children[-1] = new_tree
@@ -798,15 +980,18 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                             # take into account rule priority
                             if rule.use_priority and found and (prev.level, prev.rule_num) < (level, rule_num):
                                 break
-                            if rule.items[-1].match(curr) and all(x.match(parse_trees[i + j]) for j, x in enumerate(rule.items[:-1])):
-                                found = (prev, curr, idx)
+                            if mres := rule.match(*parse_trees[i:i + len(rule.items) - 1], curr):
+                            #if rule.items[-1].match(curr) and all(x.match(parse_trees[i + j]) for j, x in enumerate(rule.items[:-1])):
+                                found = (prev, curr, idx, mres)
                         if found:
-                            prev, curr, i0 = found
+                            prev, curr, i0, mres = found
                             b, e = rule.interval
                             assert e == len(rule.items)
                             rule.replace_items_tags(parse_trees[i:i + e - 1] + [curr])
                             new_tree = ParseTree(curr.token, str(rule), parse_trees[i + b:i + e - 1] + [curr],
-                                                 metadata=rule.metadata, main_branch=rule.main_token - b, level=level, rule_num=rule_num)
+                                                 metadata=rule.metadata, main_branch=rule.main_token - b,
+                                                 level=level, rule_num=rule_num,
+                                                 chech_func=rule.postprocess_func, create_func=rule.create_func)
                             if debug:
                                 print(f'apply rule {rule} to {parse_trees[i + b:i + e - 1] + [curr]}: {new_tree}')
                             prev.children[0] = new_tree
@@ -819,7 +1004,8 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                             changed = True
                             break
 
-                    if all(x.match(parse_trees[i + j]) for j, x in enumerate(rule.items)):
+                    if mres := rule.match(*parse_trees[i:i + len(rule.items)]):
+                    #if all(x.match(parse_trees[i + j]) for j, x in enumerate(rule.items)):
                         if rule.main_token is None:
                             b, e = rule.interval
                             if all(isinstance(x, Token) for x in parse_trees[i + b:i + e]):
@@ -847,7 +1033,9 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                             rule.replace_items_tags(parse_trees[i:i + len(rule.items)])
                             new_tree = ParseTree(parse_trees[i + rule.main_token].token, str(rule),
                                                  parse_trees[i + b:i + e],
-                                                 metadata=rule.metadata, main_branch=rule.main_token - b, level=level, rule_num=rule_num)
+                                                 metadata=rule.metadata, main_branch=rule.main_token - b, level=level,
+                                                 rule_num=rule_num,
+                                                 chech_func=rule.postprocess_func, create_func=rule.create_func)
                             if debug:
                                 print(f'apply rule {rule} to {parse_trees[i + b:i + e]}: {new_tree}')
                             parse_trees[i + b:i + e] = [new_tree]
@@ -857,6 +1045,11 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                     if debug:
                         print('changed')
                     break
+
+    for tree in parse_trees:
+        if isinstance(tree, ParseTree):
+            tree.check()
+
     return parse_trees
 
 
@@ -895,7 +1088,7 @@ def parse_item(item: str) -> Tuple[RuleItem, bool]:
         return RuleItemConst(item.split('|'), tags=tags), selected
 
 
-def parse_rule(rule: str):
+def parse_rule(rule: str, cond_func=None, check_func=None, create_func=None) -> GrammarRule:
     text = rule.strip()
     if rule[0] == '^':
         rule = rule[1:].strip()
@@ -942,7 +1135,8 @@ def parse_rule(rule: str):
     else:
         raise Exception('Multiple main tokens in rule')
     return GrammarRule(name, [x[0] for x in items], main_token, metadata, interval=(open_pos, close_pos),
-                       subtree=subtree, use_priority=True, text=text)
+                       subtree=subtree, use_priority=True, text=text,
+                       cond_func=cond_func, postprocess_func=check_func, create_func=create_func)
 
 
 def parse_grammar(grammar: str):
@@ -963,8 +1157,24 @@ def parse_grammar(grammar: str):
     return Grammar(rules)
 
 
+def parse_grammar_list(grammar: List[Tuple]):
+    level = 0
+    rules = []
+    for rulestr, *func in grammar:
+        line = rulestr.strip()
+        # skip empty lines
+        if line == '':
+            raise Exception('Empty rule in grammar')
+        # '#' means new level
+        if line[0] == '#':
+            level += 1
+        else:  # parse rule
+            rules.append((level, parse_rule(line, *func)))
+    return Grammar(rules)
+
+
 from grammar import grammar_str
-grammar = parse_grammar(grammar_str)
+grammar = parse_grammar_list(grammar_str)
 
 
 math_env_names = {"equation", "equation*", "align", "align*", "eqnarray", "eqnarray*", "multline", "multline*",
@@ -996,6 +1206,11 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
 
     text = " ".join(text_segments)
 
+    # copy files parsed.txt, failed.txt and parse_trees.txt (if exist) to files with the same name with .old extension
+    for file in ['parsed.txt', 'failed.txt', 'parse_trees.txt']:
+        if os.path.isfile(file):
+            shutil.copy(file, file + '.old')
+
     # for fragment in document.text_fragments():
     sent_tokens = tokenize_text_nltk(text)
     uncommon_words = defaultdict(lambda: 0)
@@ -1016,13 +1231,15 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
             with open(pickle_file, 'wb') as f:
                 pickle.dump(parse_trees, f)
         for tree in parse_trees:
-            if isinstance(tree, ParseTree) and tree.metadata.get('err', None) is not None:
-                err = tree.metadata['err']
-                if all(x.metadata.get('err', None) != err for x in tree.children):
-                    stxt = " ".join(x.get_word() for x in tree if isinstance(x, Token))
-                    if pr:
-                        print(f'error: {err}; in "{stxt}")')
-                    errors.append([err, stxt])
+            if isinstance(tree, ParseTree):
+                for subtree in tree:
+                    if isinstance(subtree, ParseTree) and subtree.metadata.get('err', None) is not None:
+                        err = subtree.metadata['err']
+                        if all(x.metadata.get('err', None) != err for x in subtree.children):
+                            stxt = " ".join(x.get_word() for x in tree if isinstance(x, Token))
+                            if pr:
+                                print(f'error: {err}; in "{stxt}")')
+                            errors.append([err, stxt])
         if len(parse_trees) != 1:
             with open('failed.txt', 'a' if len(failed) else 'w') as f:
                 f.write(f"{len(failed)+1}. {' '.join(x[0] for x in sent)}\n")
@@ -1036,6 +1253,11 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
                 f.write(parse_trees[0].str_for_print())
                 f.write('\n=========================================================\n')
             parsed.append((i, ' '.join(x[0] for x in sent), parse_trees))
+        with open('parse_trees.txt', 'a' if len(parsed)+len(failed) else 'w') as f:
+            f.write(f"{len(failed) + len(parsed)}. {' '.join(x[0] for x in sent)}\n")
+            for tree in parse_trees:
+                f.write(tree.str_for_print())
+            f.write('\n=========================================================\n')
         if len(failed) >= max_fails:
             break
 
@@ -1339,12 +1561,12 @@ def test_trees(repeat_threshold=10):
 
 if __name__ == '__main__':
     #test_trees()
-    #test_full_tex_file('tests/main.tex')
-    #test_full_tex_file('tests/Quantum Sampling/main.tex')
+    test_full_tex_file('tests/main.tex',1000)
+    #test_full_tex_file('tests/Quantum Sampling/main.tex',1000)
     #test_full_tex_file('tests/Quantum Verification/main.tex')
-    #test_full_tex_file('tests/LTC (stoc2022)/main.tex')
-    test_full_tex_file('tests/CircuitModelsHyperbolicEng/main.tex')
-    #test_full_tex_file('tests/balanced_product/balanced_product_codes.tex')
+    #test_full_tex_file('tests/LTC (stoc2022)/main.tex',1000)
+    #test_full_tex_file('tests/CircuitModelsHyperbolicEng/main.tex', 1000)
+    #test_full_tex_file('tests/balanced_product/balanced_product_codes.tex',1000)
     #test_full_tex_file('tests/Convolution_maximizers_DD-22/main.tex')
     #test_article_dir("/Users/gleb/PycharmProjects/ineq-prover/prover/arxiv/0705/0705.0968")
     #test_dir_with_articles_parallel("/Users/gleb/PycharmProjects/ineq-prover/prover/arxiv/0705")

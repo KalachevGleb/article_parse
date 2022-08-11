@@ -294,8 +294,8 @@ class TextFragment(TextFragmentBase):
                     arg, = text.read_args([True])
                     res_tokens.extend(arg)
                 elif tok in formatting_tex_macros_no_arg:
-                    #if tok[-1].isalpha():
-                    text.skip_ws()
+                    if tok[-1].isalpha():
+                        text.skip_ws()
                 else:
                     res_tokens.append(tok)
         except TexError as e:
