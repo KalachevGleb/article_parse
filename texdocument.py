@@ -3,8 +3,9 @@ import re
 from collections import defaultdict
 from typing import Optional, List, Dict
 
+from parse_formula import parse_eqn
 from stdenvs import get_standard_env, TextFragmentBase, AbstractEnvironment, BibliographyEnvironment
-from texbase import TexEnvBase, TexItem, UnknownEnvironment
+from texbase import TexEnvBase, TexItem, UnknownEnvironment, register_standard_environment
 from texstream import TexDefinedCommands, TexStream, TexEnvironment, TexTheoremDef, TexMacro, TexError, tokens_to_text
 
 
@@ -204,6 +205,22 @@ formatting_tex_macros_1arg = {"\\textbf", "\\textit", "\\texttt", "\\textsc", "\
 formatting_tex_macros_no_arg = {"\\textcompwordmark", "\\sf", "\\sl", "\\,", "\\!", "\\'", '\\"', "\\`", "\\^", "\\~", "\\-","\\\\"}
 
 
+math_env_names = {"equation", "equation*", "align", "align*", "eqnarray", "eqnarray*", "multline", "multline*",
+                  "tikzcd", "tikzcd*", "gather", "gather*"}
+
+
+class MathEnv(TexEnvBase):
+    def __init__(self, parent, env_name, items=None):
+        super().__init__(parent, env_name)
+        if items is not None and len(items) != 1 or not isinstance(items[0], TextFragment):
+            raise TexError(f'Error: invalid content in math environment {env_name}')
+        self.frag = items[0] if items else None
+        self.eqn = parse_eqn(self.frag.text_str()) if self.frag else None
+
+
+register_standard_environment(list(math_env_names), [], MathEnv)
+
+
 class TextFragment(TextFragmentBase):
     def __init__(self, text: str):
         super().__init__(text)
@@ -241,7 +258,7 @@ class TextFragment(TextFragmentBase):
                         args = read_unknown_macro_args(text)
                         env_stack.append([env_name, None, args, []])
                     else:
-                        if env.verbatim:
+                        if env.verbatim or env_name in math_env_names:
                             verbatim = True
                         args = env.read_args(text)
                         env_stack.append([env_name, env, args, []])
@@ -257,7 +274,8 @@ class TextFragment(TextFragmentBase):
                             env_stack[-1][-1].append(env(None, items, args))
                         else:
                             env_stack[-1][-1].append(UnknownEnvironment(name, args, items))
-                    else:
+                        verbatim = False
+                    elif not verbatim:
                         print('Error: cannot end environment ' + env_name + ' because it is not started')
             except TexError:
                 print('Error: cannot read environment name')
@@ -289,7 +307,7 @@ class TextFragment(TextFragmentBase):
         text = TexStream(self.text, TexDefinedCommands())
         try:
             while text.next_token is not None:
-                tok = text.read_token()
+                tok = text.read_token(skip_scope=True)
                 if tok in formatting_tex_macros_1arg:
                     arg, = text.read_args([True])
                     res_tokens.extend(arg)
@@ -314,7 +332,7 @@ class TexSection(TexItem):
         self.label = label
 
     def __str__(self):
-        return self.name + '\n' + ''.join(map(str(self.items)))
+        return self.name + '\n' + ''.join(map(str, self.items()))
 
     def __iter__(self):
         return self.items.__iter__()
@@ -436,6 +454,10 @@ predefined_tex_macros = r"""
 \newcommand{\usetikzlibrary}[2][]{}
 \newcommand{\tikzset}[1]{}
 \newcommand{\theoremstyle}[1]{}
+\newcommand{\hphantom}[1]{}
+\newcommand{\vphantom}[1]{}
+\newcommand{\bibliographystyle}[1]{}
+\newcommand{\bibliography}[1]{}
 """
 
 

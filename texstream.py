@@ -2,6 +2,83 @@ import re
 from typing import List, Dict, Optional, Union
 
 
+class ErrorContext:
+    def __init__(self):
+        self.err_by_levels: Dict[int, List[str]] = {}
+        self.err_levels = {0: 'Note', 1: 'Weak warning', 2: 'Warning', 3: 'Error', 4: 'Fatal'}
+        self.print_level = 0
+
+    def messages(self, level: int) -> List[str]:
+        return self.err_by_levels.get(level, [])
+
+    def notes(self) -> List[str]:
+        return self.messages(0)
+
+    def weak_warnings(self) -> List[str]:
+        return self.messages(1)
+
+    def warnings(self) -> List[str]:
+        return self.messages(2)
+
+    def errors(self) -> List[str]:
+        return self.messages(3)
+
+    def fatals(self) -> List[str]:
+        return self.messages(4)
+
+    def reset(self) -> None:
+        self.err_by_levels = {}
+
+    def print_messages(self, level: int) -> None:
+        if level in self.err_by_levels and self.err_by_levels[level]:
+            print(f'{self.err_levels[level]}s:')
+            for msg in self.messages(level):
+                print(f'  {msg}')
+            print()
+
+    def print_all(self, min_level=0) -> None:
+        for level in self.err_levels:
+            if level >= min_level:
+                self.print_messages(level)
+
+
+tex_error_context = ErrorContext()
+
+
+def tex_message(level: int, msg: str):
+    if level >= tex_error_context.print_level:
+        print(f'{tex_error_context.err_levels[level]}: {msg}')
+    tex_error_context.err_by_levels.setdefault(level, []).append(msg)
+
+
+def tex_note(msg: str):
+    tex_message(0, msg)
+
+
+def tex_weak_warning(msg: str):
+    tex_message(1, msg)
+
+
+def tex_warning(msg: str):
+    tex_message(2, msg)
+
+
+def tex_error(msg: str):
+    tex_message(3, msg)
+
+
+def tex_fatal(msg: str):
+    tex_message(4, msg)
+
+
+def tex_print_errors(min_level=0):
+    tex_error_context.print_all(min_level)
+
+
+def reset_tex_errors():
+    tex_error_context.reset()
+
+
 class TexError(Exception):
     pass
 
@@ -25,11 +102,11 @@ class TexStream:
         self.pos += 1
         return token
 
-    def read_token(self):
+    def read_token(self, skip_scope=False):
         token = self._read_token()
-        if token == '{':
+        if token == '{' and not skip_scope:
             self.defined_commands.begin_scope()
-        elif token == '}':
+        elif token == '}' and not skip_scope:
             self.defined_commands.end_scope()
         return token
 

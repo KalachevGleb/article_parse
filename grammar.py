@@ -32,6 +32,30 @@ def check_complete(verb):
         verb.metadata['incomplete'] = 1
 
 
+def check_modal_verb(root, modal, verb):
+    if verb.ps not in ('VB', 'VBP') or verb.get_word() in ('is', 'are', 'am'):
+        root.metadata['err'] = f"{verb.get_word()} in wrong form after '{modal.get_word()}', should be infinitive"
+
+
+def check_let_clause(root, let, verb, subj=None):
+    check_modal_verb(root, let, verb)
+
+
+def check_the(root, art, noun):
+    if noun.metadata.get('the', None) is not None:
+        if art.pos == 'ART':
+            root.metadata['err'] = f"'{art.text}' is redundant before {noun.text}"
+        else:
+            root.metadata['err'] = f"article before noun is redundant after {art.text}"
+
+
+def check_the_the_nn(root, *args, nn1=None, nn2=None):
+    if nn1 is not None and nn1.metadata.get('gsp',None) == 'NN' and nn1.metadata.get('the', None) != 1:
+        nn1.metadata['err'] = f"'the' before '{nn1.get_word()}' expected in the ... the ... comparison '{root.text}'"
+    if nn2 is not None and nn2.metadata.get('gsp',None) == 'NN' and nn2.metadata.get('the', None) != 1:
+        nn2.metadata['err'] += f"  'the' before '{nn2.get_word()}' expected in the ... the ... comparison '{root.text}'"
+
+
 grammar_str = [
     ("(‘ ‘){leaf:1,ps:QOPEN}", None),
     ("(’ ’){leaf:1,ps:QCLOSE}", None),
@@ -138,12 +162,12 @@ grammar_str = [
     (r"""(_NNP _NNP*){cmpxnnp: 1}""", None),
     (r"""(_CD* -|-- _CD){cdrange:1}""", None),
     (r"""#""", None),
-    (r"""_CITE* , _CITE""", None),
+    (r"""(_CITE* , _CITE){comma:1}""", None),
     (r"""_CITE* and _CITE""", None),
-    (r"""_CITE* , and _CITE""", None),
-    (r"""_CD{ref:1}* , _CD{ref:1}""", None),
+    (r"""_CITE{comma:1}* , and _CITE""", None),
+    (r"""(_CD{ref:1}* , _CD{ref:1}){comma:1}""", None),
     (r"""_CD{ref:1}* and _CD{ref:1}""", None),
-    (r"""_CD{ref:1}* , and _CD{ref:1}""", None),
+    (r"""_CD{ref:1,comma:1}* , and _CD{ref:1}""", None),
     (r"""(_NNP _{subj:1,aux:null}*){named: 1}""", None),
     (r"""(_NNP* _CITE){cite: 1}""", None),
     (r"""(_NNP* _CD){numbered: 1}""", None),
@@ -169,10 +193,15 @@ grammar_str = [
 
     (r"""^(_JJ* \( _JJ \)){comment:1}""", None),
 
-    (r"""(_JJ|JJS|JJR _NN|NNS|NNP|NNPS*){left_jj:1}""", None),
+    (r"""(the _JJR*){ps:JJRT,whole:0}""", None),
+    (r"""(the _RBR*){ps:RBRT,whole:0}""", None),
+    (r"""(_{gsp:NN}){jjrt_arg:1}""", None),
+    (r"""(_{gsp:VB,whole:1}){jjrt_arg:1}""", None),
+
+    (r"""^(_JJ|JJS|JJR _NN|NNS|NNP|NNPS*){left_jj:1}""", None),
     (r"""^(_NN|NNS|NNP|NNPS* _JJ|JJS|JJR{compare:1})""", None),
     (r"""_{nnpos:1} _{subj:1}*""", None),
-    (r"""its|his|her|their|our|my _{subj:1}*""", None),
+    (r"""(its|his|her|their|our|my _{subj:1}*){the:1}""", None, check_the),
 
     (r"""(_{gsp:NN}* _CITE){cite:1}""", None),
     (r"""(_{gsp:VB}* _CITE){cite:1}""", None),
@@ -197,8 +226,8 @@ grammar_str = [
     (r"""(_{subj:1} [_IN{left_nn:1}]){has_left:1}""", None),
     (r"""(_{gsp:VB} [_IN{left_vb:1}]){has_left:1}""", None),
     (r"""(_IN{left_vb:1,right_nn:1,has_left:null,before:null} _{gsp:NN} [_{gsp:NN}*] _MD|VB|VBP|VBZ{whole:0}){obj:1}""", None),
-    (r"""(_{gsp:NN} _{gsp:NN,the:null,obj:null,restrict_nn_join:null,left_jj:null}*){no_of:1}""", None),
-    (r"""(_EQN|CD _{gsp:NN,the:null,obj:null,restrict_nn_join:null}*){no_of:1}""", None),
+    (r"""(_{gsp:NN,has_right:null} _{gsp:NN,the:null,obj:null,restrict_nn_join:null,left_jj:null}*){no_of:1}""", None),
+    (r"""(_EQN|CD{has_right:null} _{gsp:NN,the:null,obj:null,restrict_nn_join:null}*){no_of:1}""", None),
     (r"""(_{subj:1}* _IABBR){new_abbr: 1}""", None),
 
     (r"""(_JJ|PDT|DT|ART|CD [_VBG|VBN _{subj:1}*])""", None),
@@ -206,8 +235,8 @@ grammar_str = [
 
     (r"""(both _EQN|VBG|NN|NNS|NNP|NNPS{many:1}*){gsp:NN,both:1,subj:1,left_jj:1}""", None),
     (r"""(_DT|PDT _VBG|NN|NNS|NNP|NNPS*){gsp:NN,subj:1,left_jj:1}""", None),
-    (r"""(the _NN|NNS|NNP|NNPS|EQN*){the:1,left_jj:1}""", None),
-    (r"""(a|an _NN|NNP|EQN*){the:0,left_jj:1}""", None),
+    (r"""(the _NN|NNS|NNP|NNPS|EQN*){the:1,left_jj:1}""", None, check_the),
+    (r"""(a|an _NN|NNP|EQN*){the:0,left_jj:1}""", None, check_the),
     (r"""(a|an _NNS|NNPS*){the:0,left_jj:1, err:'a|an before plural'}""", None),
     (r"""(some _NN|NNS*){exists:1,quant:1,left_jj:1}""", None),
     (r"""(some|any|all|each|many _EQN*){quant:1,left_jj:1}""", None),
@@ -225,6 +254,12 @@ grammar_str = [
 
     (r"""(and* , _RB{leaf:1} ,)""", None),
     (r"""(or* , _RB{leaf:1} ,)""", None),
+
+    (r"""(_RB and _RB*){and: 1}""", None),
+
+    (r"""_RB _{gsp:VB}*""", None),
+    (r"""^(_RB _VBG|VBN*)""", None),
+    (r"""^(_RB _JJ|JJR|RB|RBR*)""", None),
 
     # (r"""(!and|or [_NN|NNS|NNP|NNPS{and:null,or:null} , _NN|NNS|NNP|NNPS*]){comma: 1}""", None),
     (r"""(_NN|NNS|NNP|NNPS{comma:1,and:null,or:null} ,{arg:=comma} and _NN|NNS|NNP|NNPS*){and: 1, many: 1}""", None, multi_arg_enumeration),
@@ -250,8 +285,8 @@ grammar_str = [
     (r"""^(_EQN{and:null,or:null}* , _EQN){comma: 1, many: 1}""", None),
     (r"""^(_EQN{comma:1,and:null,or:null} ,{arg:=comma} and _EQN*){and: 1, many: 1}""", None, multi_arg_enumeration),
     (r"""^(_EQN{comma:1,and:null,or:null} ,{arg:=comma} or _EQN*){or: 1}""", None, multi_arg_enumeration),
-    (r"""^(_EQN{comma:null} ,{arg:=comma} and _EQN*){and: 1, many: 1, err: "redundant ',' before and"}""", None, multi_arg_enumeration),
-    (r"""^(_EQN{comma:null} ,{arg:=comma} or _EQN*){or: 1, err: "redundant ',' before or"}""", None, multi_arg_enumeration),
+    #(r"""^(_EQN{comma:null} ,{arg:=comma} and _EQN*){and: 1, many: 1, err: "redundant ',' before and"}""", None, multi_arg_enumeration),
+    #(r"""^(_EQN{comma:null} ,{arg:=comma} or _EQN*){or: 1, err: "redundant ',' before or"}""", None, multi_arg_enumeration),
     (r"""^(!and|or{arg:=_} [_EQN and _EQN*]){and: 1, many: 1}""", None, multi_arg_enumeration),
     (r"""^(!and|or{arg:=_} [_EQN or _EQN*]){or: 1}""", None, multi_arg_enumeration),
     (r"""^(_EQN* and _EQN){and: 1, many: 1}""", None, multi_arg_enumeration),
@@ -259,7 +294,7 @@ grammar_str = [
     (r"""(either _{or:1}*)""", None),
 
     (r"""([_{subj:1}*] !_{of_type:1}){of_arg:1}""", None),
-    (r"""(_{gsp:NN}* _{of_type:1} _{of_arg:1}){of_arg:1}""", None),
+    (r"""(_{gsp:NN}* _{of_type:1} _{of_arg:1}){of_arg:1,has_right:1}""", None),
 
     (r"""^(_{and:1}* , respectively){resp:1}""", None),
     (r"""^(_{or:1}* , respectively){resp:1}""", None),
@@ -284,7 +319,7 @@ grammar_str = [
     (r"""^(_VBG{what:null}* us|me|him|her|it|them|itself|himself|myself|herself|themselves){whom:1}""", None),
 
     (r"""_{gsp:VB}* _VBG""", None),
-    (r"""(_MD _{gsp:VB}*){vbz:_}""", None),
+    (r"""(_MD _{gsp:VB,whole:0}*){vbz:_}""", None, check_modal_verb),
     (r"""has|have{leaf:1}* _VBN|VBD""", None),
     (r"""(has|have{leaf:1}* _{gsp:VB,whole:0}){err: "possible wrong verb form after 'has/have'"}""", None),
 
@@ -325,11 +360,6 @@ grammar_str = [
     (r"""^(_{gsp:VB,what:null}* _JJ){what:1}""", None),
     (r"""^(_{gsp:VB,post_prep:null}* _IN{nontran:1}){post_prep:1}""", None),
 
-    (r"""(_RB and _RB*){and: 1}""", None),
-
-    (r"""_RB _{gsp:VB}*""", None),
-    (r"""^(_RB _VBG|VBN*)""", None),
-    (r"""^(_RB _JJ|JJR|RB|RBR*)""", None),
     (r"""^(_RB _IN|OF*)""", None),
 
     (r"""(_JJR{than:null}* than _{subj:1}){than:1}""", None),
@@ -358,7 +388,8 @@ grammar_str = [
     (r"""(_VBG{gsp:null}* or _VBG{gsp:null}){or:1}""", None, multi_arg_enumeration),
 
     #
-    (r"""let* _{gsp:VB,whole:0}""", None),
+    (r"""let{has_verb:null->1}* _{gsp:VB,whole:0}""", None, check_let_clause),
+    (r"""let{has_verb:null->1}* _{gsp:NN,arg:subj} _{gsp:VB,whole:0}""", None, check_let_clause),
     #
     (r"""([_{canbe:NN}*] _{gsp:VB,whole:0}){ps:NN,subj:1,many:0}""", None),
     (r"""([_{canbe:NNS}*] _{gsp:VB,whole:0}){ps:NNS,subj:1,many:1}""", None),
@@ -370,7 +401,7 @@ grammar_str = [
     (r"""(!_IN{left_vb:1,right_nn:1,before:null} [_{subj:1} _{gsp:VB,whole:0}*]){whole:1}""", None, check_many),
     (r"""(!_IN{left_vb:1,right_nn:1,before:null} [_{can_p:1} _{gsp:VB,whole:0}*]){whole:1}""", None, check_many),
     (r"""([_{can_p:1,no_prep:1} _{gsp:VB,whole:0}*]){whole:1}""", None, check_many),
-    (r"""(_JJ{many:=0} is|are*){whole:1,def:1}""", None, check_many),
+    (r"""(_JJ{many:=0} is|are{whole:0}*){whole:1,def:1}""", None, check_many),
     (r"""(_SOL{arg:_} [_VB|VBP|VBD|VBZ{gsp:VB,whole:0}*]){whole:1}""", None, None, check_complete),
 
     (r"""^(_{gsp:VB,whole:1}* ,|and therefore|hence|thus|so _{at_end:1}){dep:hence,at_end:1}""", None),
@@ -382,6 +413,14 @@ grammar_str = [
     (r"""(, _RB , _{gsp:VB}*)""", None),
     (r"""_{vvod:1} , _{gsp:VB}*""", None),
     (r"""(_{vvod:1} _{gsp:VB}*){err:"',' expected"}""", None),
+    #
+    (r"""(_JJRT{whole:0}* _{jjrt_arg:1,arg:=nn1} _JJRT{whole:0} _{jjrt_arg:1,arg:=nn2}){whole:1}""", None, check_the_the_nn),
+    (r"""(_RBRT|JJRT{whole:0}* _{gsp:VB,whole:1} _RBRT|JJRT{whole:0} _{gsp:VB,whole:1}){whole:1}""", None),
+    (r"""(_JJRT{whole:0}* _{jjrt_arg:1,arg:=nn1} ,{arg:=_} _JJRT{whole:0} _{jjrt_arg:1,arg:=nn2}){whole:1}""", None, check_the_the_nn),
+    (r"""(_RBRT|JJRT{whole:0}* _{gsp:VB,whole:1} , _RBRT|JJRT{whole:0} _{gsp:VB,whole:1}){whole:1}""", None),
+    (r"""(_JJRT|RBRT{whole:1}* ,{arg:=_} _JJRT|RBRT{whole:0} _{jjrt_arg:1,arg:=nn1}){whole:1}""", None, check_the_the_nn),
+    (r"""(_JJRT|RBRT{whole:1}* ,{arg:=_} and _JJRT|RBRT{whole:0} _{jjrt_arg:1,arg:=nn1}){whole:1}""", None, check_the_the_nn),
+
     #
     (r"""_IN{right_nn:1,left_vb:1} _{subj:1} _VB|VBP|VBZ|VBD{whole:1}*""", None),
     (r"""(_SOL [_IN _{subj:1} , _VB|VBP|VBZ|VBD{whole:1}*])""", None),
@@ -396,16 +435,16 @@ grammar_str = [
     (r"""(_VB{comma:1} , and _VB*){and: 1}""", None),
     (r"""(_VB{comma:1} , or _VB*){or: 1}""", None),
     (r"""^(_{gsp:VB,whole:0}* and _{gsp:VB,whole:0}){and: 1}""", None, multi_arg_enumeration),
-    (r"""^(_{gsp:VB,whole:0}* ,{arg:comma} and _{gsp:VB,whole:0}){and: 1}""", None, multi_arg_enumeration),
+    (r"""^(_{gsp:VB,whole:0,comma:1}* ,{arg:comma} and _{gsp:VB,whole:0}){and: 1}""", None, multi_arg_enumeration),
     (r"""(_{gsp:VB,whole:1} and _{gsp:VB,whole:1}*){and: 1}""", None),
     (r"""^(_{gsp:VB,whole:0}* or _{gsp:VB,whole:0}){or: 1}""", None, multi_arg_enumeration),
-    (r"""^(_{gsp:VB,whole:0}* ,{arg:comma} or _{gsp:VB,whole:0}){or: 1}""", None, multi_arg_enumeration),
+    (r"""^(_{gsp:VB,whole:0,comma:1}* ,{arg:comma} or _{gsp:VB,whole:0}){or: 1}""", None, multi_arg_enumeration),
     (r"""(_{gsp:VB,whole:1} or _{gsp:VB,whole:1}*){or: 1}""", None),
     (r"""^(_NN|NNS|NNP|NNPS{and:null,or:null}* ,{arg:comma} _NN|NNS|NNP|NNPS){comma: 1, many: 1}""", None),
     (r"""^(_NN|NNS|NNP|NNPS* and _NN|NNS|NNP|NNPS){and: 1, many: 1}""", None, multi_arg_enumeration),
     (r"""^(_NN|NNS|NNP|NNPS* or _NN|NNS|NNP|NNPS){or: 1}""", None, multi_arg_enumeration),
-    (r"""^(_NN|NNS|NNP|NNPS* ,{arg:comma} and _NN|NNS|NNP|NNPS){and: 1, many: 1}""", None, multi_arg_enumeration),
-    (r"""^(_NN|NNS|NNP|NNPS* ,{arg:comma} or _NN|NNS|NNP|NNPS){or: 1}""", None, multi_arg_enumeration),
+    (r"""^(_NN|NNS|NNP|NNPS{comma:1}* ,{arg:comma} and _NN|NNS|NNP|NNPS){and: 1, many: 1}""", None, multi_arg_enumeration),
+    (r"""^(_NN|NNS|NNP|NNPS{comma:1}* ,{arg:comma} or _NN|NNS|NNP|NNPS){or: 1}""", None, multi_arg_enumeration),
 
     (r"""^(_NN|NNS{which:null}* which _{gsp:VB}){which:1}""", None),
     (r"""^(_NN|NNS{which:null}* _IN which _{gsp:VB}){which:1}""", None),
@@ -444,8 +483,8 @@ grammar_str = [
     (r"""(if|when _{whole:1}* then _{whole:1}){dep:if_then}""", None),
     (r"""(if|when _{whole:1}* , then _{whole:1}){dep:if_then}""", None),
     (r"""(when|whenever _{whole:1}* , _{whole:1}){dep:if_then}""", None),
-    (r"""(when|whenever _{whole:1}* _{whole:1}){dep:if_then, warn: "',' expected between parts"}""", None),
-    (r"""(if _{whole:1}* _{whole:1}){dep:if_then,err:"',', 'or', 'and' or 'then' expected"}""", None),
+    (r"""(when|whenever _{whole:1}* _{whole:1}){dep:if_then, warn: "probably ',' expected between parts"}""", None),
+    (r"""(if _{whole:1}* _{whole:1}){dep:if_then,warn:"probably ',', 'or', 'and' or 'then' expected"}""", None),
     (r"""(if _{whole:1}* , _{whole:1}){dep:if_then,warn:"maybe, 'then' expected"}""", None),
     (r"""([_{gsp:VB,whole:1}* _IF _{whole:1}] !then){dep:if}""", None),
     (r"""([_{gsp:VB,whole:1}* , _IF _{whole:1}] !then){dep:if}""", None),
@@ -526,6 +565,8 @@ grammar_str = [
     (r"""(_VBD{whole:0}){ps:VBN}""", None),
     (r"""(_VBN{whole:0}){ps:VBD}""", None),
     (r"""(_VB|VBP{whole:0}){whole:1}""", None, None, check_complete),
+    #(r"""^(_JJRT _NN|NNS|NNP|NNPS*){the:1}""", None),
+
     (r"""#""", None),
     (r"""([_{gsp:VB,whole:1}* _CITE] _EOL){cite:1}""", None),
     (r"""(_SOL _{whole:1,incomplete:1}* _EOL){sentense:1,err:sentense is incomplete}""", None),

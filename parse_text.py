@@ -7,6 +7,7 @@ import os
 import pickle
 import re
 import shutil
+import time
 from collections import defaultdict
 from copy import copy
 from typing import List, Tuple, Optional, Union, Dict
@@ -16,8 +17,10 @@ from nltk.stem import *
 
 
 # get infinitive form of a word using nltk
+from parse_formula import parse_eqn, Variable, EqnList, ExprTokenSeq, ExprElement, tex_rel_bin_operators
 from stdenvs import BibliographyEnvironment
-from texdocument import TexDocument, TextFragment
+from texdocument import TexDocument, TextFragment, MathEnv
+from texstream import reset_tex_errors, tex_error, tex_print_errors, tex_warning
 
 
 def get_infinitive(word):
@@ -302,6 +305,7 @@ def replace_tex_formulas(text):
         fragments.append("formula___" + str(len(formulas)))
         formula = text[match.start():match.end()]
         formulas["formula___" + str(len(formulas))] = formula
+        prev_end = match.end()
         symb = ''
         for c in formula[::-1]:
             if c == '}' or c.isalnum():
@@ -393,7 +397,7 @@ def tokenize_text_nltk(txt):
                 if formula.endswith('-'):
                     tagged[i] = (formula, 'EQNP')
                 else:
-                    tagged[i] = (formulas[tagged[i][0]], 'EQN')
+                    tagged[i] = (formula, 'EQN')
             elif tagged[i][0].startswith('equation_'):
                 tagged[i] = (tagged[i][0], 'EQN')
 
@@ -561,6 +565,54 @@ class ParseTreeNode:
     def arg_name(self):
         return self.metadata.get('arg', None)
 
+    @property
+    def ps(self):
+        return self.metadata.get('ps', None)
+
+
+def get_parsed_eqn_metadata(eqn_parsed, eqn):
+    res = {}
+    if isinstance(eqn_parsed, Variable):
+        res['variable'] = 1
+        res['many'] = 0
+    elif isinstance(eqn_parsed, EqnList):
+        if len(eqn_parsed.eqns) > 1:
+            res['many'] = 1
+            res['comma'] = 1
+        has_rel = 0
+        has_not_rel = 0
+        for eq in eqn_parsed.eqns:
+            eq_res = get_parsed_eqn_metadata(eq, eqn)
+            if eq_res.get('whole', 0):
+                has_rel += 1
+            else:
+                has_not_rel += 1
+            if not eq_res.get('variable', 0):
+                res['variable'] = 0
+        #if has_rel > 0 and has_not_rel > 0:
+        #    tex_warning(f'Equation {eqn} has both relations and non-relations')
+        if has_rel > 0:
+            res['whole'] = 1
+        else:
+            res['whole'] = 0
+    elif isinstance(eqn_parsed, Relation):
+        res['whole'] = 1
+    elif isinstance(eqn_parsed, ExprTokenSeq):
+        if any(isinstance(x, ExprElement) and x.token in tex_rel_bin_operators for x in eqn_parsed.tokens):
+            res['whole'] = 1
+    res.setdefault('variable', 0)
+    res.setdefault('many', 0)
+    res.setdefault('whole', 0)
+    return res
+
+
+def get_eqn_metadata(eqn):
+    if eqn[:2] == '$$' and eqn[-2:] == '$$':
+        eqn = eqn[2:-2]
+    if eqn[:1] == '$' and eqn[-1] == '$':
+        eqn = eqn[1:-1]
+    eqn_parsed = parse_eqn(eqn)
+    return get_parsed_eqn_metadata(eqn_parsed, eqn)
 
 # Token class, contains word and metadata from nltk tokenizer
 class Token(ParseTreeNode):
@@ -572,6 +624,8 @@ class Token(ParseTreeNode):
         if self.ps in ('IN', 'TO'):
             self.metadata.update(prep_types.get(word, {}))
         self.metadata['leaf'] = 1
+        if self.ps == 'EQN' and self.word[-1] != '-' and (self.word[0] == '$' or self.word[:2] == '\\['):
+            self.metadata.update(get_eqn_metadata(self.word))
 
     def __str__(self):
         return f'{self.word}({self.metadata})'
@@ -602,11 +656,6 @@ class Token(ParseTreeNode):
     @property
     def text(self):
         return self.word
-
-    @property
-    def ps(self):
-        return self.metadata.get('ps', None)
-
 
 
 # Parse tree for natural language;
@@ -733,9 +782,7 @@ class RuleItemWithTags(RuleItem):
                         value = yaml.safe_load(value[1:])
                         self.replace_tags[tag] = value
                         continue
-                    elif len(parts:=value.split('->')) > 1:
-                        if len(parts) > 2:
-                            raise ValueError(f'Invalid tag value {value}')
+                    elif len(parts:=value.split('->', 2)) > 1:
                         self.tags[tag] = yaml.safe_load(parts[0])
                         self.replace_tags[tag] = yaml.safe_load(parts[1])
                         continue
@@ -796,7 +843,7 @@ class RuleItemVariable(RuleItemWithTags):
 class NegateRuleItem(RuleItem):
     def __init__(self, item: RuleItem):
         self.item = item
-        if isinstance(item, RuleItemWithTags) and item.replace_tags:
+        if isinstance(item, RuleItemWithTags) and item.replace_tags and tuple(item.replace_tags.keys()) != ('arg',):
             raise ValueError('! cannot be used with tag replacement')
 
     def __str__(self):
@@ -810,6 +857,10 @@ class NegateRuleItem(RuleItem):
 
     def match(self, node: ParseTreeNode):
         return not self.item.match(node)
+
+    def replace(self, node: ParseTreeNode):
+        if isinstance(self.item, RuleItemWithTags):
+            self.item.replace(node)
 
 
 class GrammarRule:
@@ -883,6 +934,9 @@ class GrammarRule:
             if isinstance(item, RuleItemWithTags):
                 item.replace(node)
 
+    def match_partial(self, *nodes: ParseTreeNode):
+        return all(item.match(node) for item, node in zip(self.items, nodes) if node is not None)
+
     def match(self, *nodes: ParseTreeNode) -> Union[bool, List[ParseTreeNode]]:
         if any(not x.match(node) for node, x in zip(nodes, self.items)):
             return False
@@ -933,8 +987,13 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                 #if rule.text == "(is|are|am|was|were|can|could|will|would|have|has|had|did|does|do* not){neg:1, leaf:1}":
                 #    print(rule.text)
                 for i in range(len(parse_trees) - len(rule.items) + 1):
+                    segment = parse_trees[i:i + len(rule.items)]
+                    if len(segment) > 2 and not rule.match_partial(None, *segment[1:-1], None):
+                        continue
                     if rule.subtree == 1:
-                        curr = parse_trees[i]
+                        if not rule.items[-1].match(segment[-1]):
+                            continue
+                        curr = segment[0]
                         left_branch = [curr]
                         while not curr.is_leaf():
                             curr = curr.children[-1]
@@ -945,20 +1004,20 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                             # take into account rule priority
                             if rule.use_priority and found and (prev.level, prev.rule_num) < (level, rule_num):
                                 break
-                            if mres := rule.match(curr, *parse_trees[i+1:i+len(rule.items)]):
+                            if mres := rule.match(curr, *segment[1:]):
                             # if rule.items[0].match(curr) and all(x.match(parse_trees[i + j + 1]) for j, x in enumerate(rule.items[1:])):
                                 found = (prev, curr, idx, mres)
                         if found:
                             prev, curr, i0, mres = found
                             b, e = rule.interval
                             assert b == 0
-                            rule.replace_items_tags([curr] + parse_trees[i + 1:i + len(rule.items)])
-                            new_tree = ParseTree(curr.token, str(rule), [curr] + parse_trees[i + 1:i + e],
+                            rule.replace_items_tags([curr] + segment[1:])
+                            new_tree = ParseTree(curr.token, str(rule), [curr] + segment[1:e],
                                                  metadata=rule.metadata, main_branch=rule.main_token - b,
                                                  level=level, rule_num=rule_num,
                                                  chech_func=rule.postprocess_func, create_func=rule.create_func)
                             if debug:
-                                print(f'apply rule {rule} to {[curr] + parse_trees[i + 1:i + e]}: {new_tree}')
+                                print(f'apply rule {rule} to {[curr] + segment[1:e]}: {new_tree}')
                             prev.children[-1] = new_tree
                             del parse_trees[i + 1:i + e]
                             for node, next in zip(left_branch[i0::-1], left_branch[i0 + 1::-1]):
@@ -969,7 +1028,9 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                             changed = True
                             break
                     elif rule.subtree == 2:
-                        curr = parse_trees[i + len(rule.items) - 1]
+                        if not rule.items[0].match(segment[0]):
+                            continue
+                        curr = segment[-1]
                         right_branch = [curr]
                         while not curr.is_leaf():
                             curr = curr.children[0]
@@ -980,20 +1041,19 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                             # take into account rule priority
                             if rule.use_priority and found and (prev.level, prev.rule_num) < (level, rule_num):
                                 break
-                            if mres := rule.match(*parse_trees[i:i + len(rule.items) - 1], curr):
-                            #if rule.items[-1].match(curr) and all(x.match(parse_trees[i + j]) for j, x in enumerate(rule.items[:-1])):
+                            if mres := rule.match(*segment[:-1], curr):
                                 found = (prev, curr, idx, mres)
                         if found:
                             prev, curr, i0, mres = found
                             b, e = rule.interval
                             assert e == len(rule.items)
-                            rule.replace_items_tags(parse_trees[i:i + e - 1] + [curr])
-                            new_tree = ParseTree(curr.token, str(rule), parse_trees[i + b:i + e - 1] + [curr],
+                            rule.replace_items_tags(segment[:e-1] + [curr])
+                            new_tree = ParseTree(curr.token, str(rule), segment[b:e-1] + [curr],
                                                  metadata=rule.metadata, main_branch=rule.main_token - b,
                                                  level=level, rule_num=rule_num,
                                                  chech_func=rule.postprocess_func, create_func=rule.create_func)
                             if debug:
-                                print(f'apply rule {rule} to {parse_trees[i + b:i + e - 1] + [curr]}: {new_tree}')
+                                print(f'apply rule {rule} to {segment[b:e-1] + [curr]}: {new_tree}')
                             prev.children[0] = new_tree
                             del parse_trees[i + b:i + e - 1]
                             for node, next in zip(right_branch[i0::-1], right_branch[i0 + 1::-1]):
@@ -1004,24 +1064,24 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                             changed = True
                             break
 
-                    if mres := rule.match(*parse_trees[i:i + len(rule.items)]):
-                    #if all(x.match(parse_trees[i + j]) for j, x in enumerate(rule.items)):
+                    if mres := rule.match(*segment):
+                        #if all(x.match(parse_trees[i + j]) for j, x in enumerate(rule.items)):
+                        b, e = rule.interval
                         if rule.main_token is None:
-                            b, e = rule.interval
-                            if all(isinstance(x, Token) for x in parse_trees[i + b:i + e]):
-                                new_token = Token(' '.join(x.get_word() for x in parse_trees[i + b:i + e]),
-                                                  parse_trees[i + b].pos, metadata=rule.metadata)
+                            if all(isinstance(x, Token) for x in segment[b:e]):
+                                new_token = Token(' '.join(x.get_word() for x in segment[b:e]),
+                                                  segment[b].pos, metadata=rule.metadata)
                                 if debug:
-                                    print(f'apply rule {rule} to {parse_trees[i + b:i + e]}: {new_token}')
-                                parse_trees[i + b:i + e] = [new_token]
+                                    print(f'apply rule {rule} to {segment[b:e]}: {new_token}')
+                                parse_trees[i+b:i+e] = [new_token]
                                 changed = True
                                 break
                         elif rule.is_tag_add_rule():
                             rule_key = str(rule)
-                            if rule_key not in parse_trees[i + rule.interval[0]].applied_rules:
-                                parse_trees[i + rule.interval[0]].applied_rules.add(rule_key)
-                                rule.replace_items_tags(parse_trees[i:i + len(rule.items)])
-                                subtree = parse_trees[i + rule.interval[0]]
+                            if rule_key not in segment[b].applied_rules:
+                                segment[b].applied_rules.add(rule_key)
+                                rule.replace_items_tags(segment)
+                                subtree = segment[b]
                                 if debug:
                                     print(f'add tags ({rule}) {rule.metadata} to {subtree}: ', end='')
                                 tags_changed = rule.add_tags(subtree)
@@ -1029,15 +1089,14 @@ def parse_sentense(tokens, grammar, debug=True) -> List[ParseTreeNode]:
                                 if debug:
                                     print(subtree, f'  (changed={tags_changed})')
                         else:
-                            b, e = rule.interval
-                            rule.replace_items_tags(parse_trees[i:i + len(rule.items)])
-                            new_tree = ParseTree(parse_trees[i + rule.main_token].token, str(rule),
-                                                 parse_trees[i + b:i + e],
+                            rule.replace_items_tags(segment)
+                            new_tree = ParseTree(segment[rule.main_token].token, str(rule),
+                                                 segment[b:e],
                                                  metadata=rule.metadata, main_branch=rule.main_token - b, level=level,
                                                  rule_num=rule_num,
                                                  chech_func=rule.postprocess_func, create_func=rule.create_func)
                             if debug:
-                                print(f'apply rule {rule} to {parse_trees[i + b:i + e]}: {new_tree}')
+                                print(f'apply rule {rule} to {segment[b:e]}: {new_tree}')
                             parse_trees[i + b:i + e] = [new_tree]
                             changed = True
                             break
@@ -1061,30 +1120,24 @@ def parse_item(item: str) -> Tuple[RuleItem, bool]:
     if item.endswith('*'):
         selected = True
         item = item[:-1]
+
+    tags = {}
+    if item.count('{'):
+        item = item.replace(':', ': ')
+        pos = item.index('{')
+        tags = yaml.safe_load(item[pos:])
+        item = item[:pos]
+
     if item.count('_'):
         pos_ = item.index('_')
         v = item[:pos_]
         suffix = item[pos_ + 1:]
-        if suffix.count('{'):
-            suffix = suffix.replace(':', ': ')
-            pos = suffix.index('{')
-            tags = yaml.safe_load(suffix[pos:])
-            suffix = suffix[:pos]
-            if '|' in suffix:
-                suffix = set(suffix.split('|'))
-            if suffix:
-                tags['ps'] = suffix
-            return RuleItemVariable(v, tags), selected
         if '|' in suffix:
             suffix = set(suffix.split('|'))
-        return RuleItemVariable(v, {'ps': suffix} if suffix else {}), selected
+        if suffix:
+            tags['ps'] = suffix
+        return RuleItemVariable(v, tags), selected
     else:
-        tags = {}
-        if item.count('{'):
-            item = item.replace(':', ': ')
-            pos = item.index('{')
-            tags = yaml.safe_load(item[pos:])
-            item = item[:pos]
         return RuleItemConst(item.split('|'), tags=tags), selected
 
 
@@ -1183,7 +1236,9 @@ math_env_names = {"equation", "equation*", "align", "align*", "eqnarray", "eqnar
 
 sufficient_pos_set = {'FW', 'JJ', 'JJR', 'JJS', 'MD', 'NN', 'NNP', 'NNPS', 'NNS', 'RB', 'RBR', 'RBS', 'RP', 'VB', 'VBD', 'VBG', 'VBN', 'VBP', 'VBZ'}
 
+
 def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
+    reset_tex_errors()
     document = TexDocument(filename=file_name)
     if pr:
         document.print_document_info()
@@ -1198,13 +1253,17 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
         elif isinstance(env, BibliographyEnvironment):
             pass
         else:
+            assert isinstance(env, MathEnv)
             eqn_counter += 1
+
             text_segments.append(f"equation_{eqn_counter}")
-            last_frag = env.items[-1]
+            last_frag = env.frag
             if isinstance(last_frag, TextFragment) and last_frag.text.count('.'):
                 text_segments.append('.')
 
     text = " ".join(text_segments)
+    with open('before_parse.txt', 'w') as f:
+        f.write(text)
 
     # copy files parsed.txt, failed.txt and parse_trees.txt (if exist) to files with the same name with .old extension
     for file in ['parsed.txt', 'failed.txt', 'parse_trees.txt']:
@@ -1223,7 +1282,7 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
                         and pos in dict_pos_set \
                         and not token in stop_words:
                     if token not in pos_dict:
-                        print(f"Warning: uncommon word {token} in \"{' '.join(tok for tok, _ in sent)})\"")
+                        #print(f"Warning: uncommon word {token} in \"{' '.join(tok for tok, _ in sent)})\"")
                         uncommon_words[token] += 1
 
         parse_trees = parse_sentense(sent, grammar, debug=False)
@@ -1237,8 +1296,9 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
                         err = subtree.metadata['err']
                         if all(x.metadata.get('err', None) != err for x in subtree.children):
                             stxt = " ".join(x.get_word() for x in tree if isinstance(x, Token))
-                            if pr:
-                                print(f'error: {err}; in "{stxt}")')
+                            #if pr:
+                            #    print(f'error: {err}; in "{stxt}")')
+                            tex_error(f'{err}; in {stxt}')
                             errors.append([err, stxt])
         if len(parse_trees) != 1:
             with open('failed.txt', 'a' if len(failed) else 'w') as f:
@@ -1253,7 +1313,7 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
                 f.write(parse_trees[0].str_for_print())
                 f.write('\n=========================================================\n')
             parsed.append((i, ' '.join(x[0] for x in sent), parse_trees))
-        with open('parse_trees.txt', 'a' if len(parsed)+len(failed) else 'w') as f:
+        with open('parse_trees.txt', 'a' if len(parsed)+len(failed) > 1 else 'w') as f:
             f.write(f"{len(failed) + len(parsed)}. {' '.join(x[0] for x in sent)}\n")
             for tree in parse_trees:
                 f.write(tree.str_for_print())
@@ -1280,10 +1340,11 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
             print()
 
         if errors:
-            print('Following errors were found:')
-            for err, sent in errors:
-                print(f'  {err}: "{sent}"')
-            print()
+            print('Following problems detected:')
+            tex_print_errors()
+            # for err, sent in errors:
+            #     print(f'  {err}: "{sent}"')
+            # print()
 
     return len(parsed), len(failed)
 
@@ -1560,22 +1621,30 @@ def test_trees(repeat_threshold=10):
 
 
 if __name__ == '__main__':
+    curr_time = time.time()
     #test_trees()
-    test_full_tex_file('tests/main.tex',1000)
+    #test_full_tex_file('tests/main.tex',1000)
     #test_full_tex_file('tests/Quantum Sampling/main.tex',1000)
     #test_full_tex_file('tests/Quantum Verification/main.tex')
     #test_full_tex_file('tests/LTC (stoc2022)/main.tex',1000)
-    #test_full_tex_file('tests/CircuitModelsHyperbolicEng/main.tex', 1000)
+    #test_full_tex_file('tests/Quantum LDPC Codes with Almost Linear Minimum Distance/main.tex',1000)
+    #test_full_tex_file('tests/Degenerate Quantum LDPC Codes With Good Finite Length Performance/main.tex', 1000)
+    #test_full_tex_file('tests/Linear-algebraic proof of Cleaning Lemma/main.tex', 1000)
+    test_full_tex_file('tests/CircuitModelsHyperbolicEng/main.tex', 1000)
     #test_full_tex_file('tests/balanced_product/balanced_product_codes.tex',1000)
     #test_full_tex_file('tests/Convolution_maximizers_DD-22/main.tex')
+    #test_full_tex_file('tests/Supremacy/QS_Supplement.tex', 1000)
+    #test_full_tex_file('tests/qLDPC Weight Reduction/qwr.tex', 1000)
     #test_article_dir("/Users/gleb/PycharmProjects/ineq-prover/prover/arxiv/0705/0705.0968")
     #test_dir_with_articles_parallel("/Users/gleb/PycharmProjects/ineq-prover/prover/arxiv/0705")
     #test_tar_with_articles_parallel("/Users/Gleb/Desktop/Solver/2020-09-08-arxiv-extracts-nofallback-until-2007-068.tar", 100000)
+    print(f'{time.time() - curr_time:.2f} seconds')
     exit(0)
-    grammar = parse_grammar(grammar_str)
-    print(grammar)
+    #grammar = parse_grammar(grammar_str)
+    #print(grammar)
     test_sentenses = [
-        r"now consider codes $\mathcal{C}_1$ and $\mathcal{C}_2$ such that they have property $(*)$ , and the dual product code $\mathcal{C}_1\boxplus \mathcal{C}_2$ does not have codewords of small weight and large rank .",
+        r"this implies that one can obtain pairs of linear codes such that their product and the product of their dual codes are simultaneously robustly testable .",
+        #r"now consider codes $\mathcal{C}_1$ and $\mathcal{C}_2$ such that they have property $(*)$ , and the dual product code $\mathcal{C}_1\boxplus \mathcal{C}_2$ does not have codewords of small weight and large rank .",
         # 'the cat is in the box',
         # "Also note that we can always remove the logarithm in the above inequalities by using its concavity and Jensen's inequality",
         # "This can be fixed by proving a multivariate extension of the ALT inequality based on pinching(see Theorem 2.3).",
