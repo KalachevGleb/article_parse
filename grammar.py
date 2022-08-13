@@ -1,13 +1,16 @@
+from texstream import tex_note, tex_warning
+
+
 def multi_arg_enumeration(root, left, op, right, comma=None):
     if not op.is_leaf():
-        print(f"Error: '{op.get_word()}' is not a leaf")
+        tex_note(f"'{op.get_word()}' is not a leaf")
     op = op.get_word()
     if op in ('and', 'or'):
         if comma is None and left.metadata.get('comma', 0):
-            print(f"Error: a comma expected before '{op}' in '{left.text} {op} {right.text}'")
+            #print(f"Error: a comma expected before '{op}' in '{left.text} {op} {right.text}'")
             root.metadata['err'] = f"a comma expected before '{op}'"
         if comma is not None and not comma.metadata.get('comma', 0):
-            print(f"Warning: a comma maybe redundant before '{op}' in '{left.text} {op} {right.text}'")
+            #tex_weak_warning(f"a comma maybe redundant before '{op}' in '{left.text} {op} {right.text}'")
             root.metadata['warn'] = f"a comma maybe redundant before '{op}'"
 
 
@@ -15,11 +18,11 @@ def check_many(root, noun, verb):
     vbz = verb.metadata.get('vbz')
     if vbz == 1:
         if noun.metadata.get('many', 0) == 1:
-            print(f"Warning: '{verb.get_word()}' should not be in 3rd person singular form after {noun.text}")
+            #tex_warning(f"'{verb.get_word()}' should not be in 3rd person singular form after {noun.text}")
             root.metadata['err'] = f"'{verb.get_word()}' should not be in 3rd person singular"
     elif vbz == 0:
         if noun.metadata.get('many', 0) == 0:
-            print(f"Warning: '{verb.get_word()}' should be in 3rd person singular form after {noun.text}")
+            #tex_warning(f"'{verb.get_word()}' should be in 3rd person singular form after {noun.text}")
             root.metadata['err'] = f"'{verb.get_word()}' should be in 3rd person singular form"
 
 

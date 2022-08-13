@@ -7,6 +7,7 @@ import os
 import pickle
 import re
 import shutil
+import sys
 import time
 from collections import defaultdict
 from copy import copy
@@ -20,7 +21,7 @@ from nltk.stem import *
 from parse_formula import parse_eqn, Variable, EqnList, ExprTokenSeq, ExprElement, tex_rel_bin_operators
 from stdenvs import BibliographyEnvironment
 from texdocument import TexDocument, TextFragment, MathEnv
-from texstream import reset_tex_errors, tex_error, tex_print_errors, tex_warning
+from texstream import reset_tex_errors, tex_error, tex_print_errors, tex_warning, tex_error_context
 
 
 def get_infinitive(word):
@@ -1237,10 +1238,14 @@ math_env_names = {"equation", "equation*", "align", "align*", "eqnarray", "eqnar
 sufficient_pos_set = {'FW', 'JJ', 'JJR', 'JJS', 'MD', 'NN', 'NNP', 'NNPS', 'NNS', 'RB', 'RBR', 'RBS', 'RP', 'VB', 'VBD', 'VBG', 'VBN', 'VBP', 'VBZ'}
 
 
-def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
+def test_full_tex_file(file_name, max_fails: Optional[int] = 100, pr=1, pickle_file=None):
     reset_tex_errors()
+    if pr:
+        print(f'Preprocessing {file_name} ... ')
     document = TexDocument(filename=file_name)
     if pr:
+        print('Preprocessing done')
+    if pr > 1:
         document.print_document_info()
     parsed = []
     failed = []
@@ -1270,20 +1275,31 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
         if os.path.isfile(file):
             shutil.copy(file, file + '.old')
 
+
     # for fragment in document.text_fragments():
     sent_tokens = tokenize_text_nltk(text)
     uncommon_words = defaultdict(lambda: 0)
     errors = []
+
+    progress = progressbar.ProgressBar(maxval=len(sent_tokens))
+    if pr <= 1:
+        tex_error_context.print_level = 4
+    else:
+        tex_error_context.print_level = 0
+
+    if pr == 1:
+        print(f'Parsing ...')
+        progress.start()
+
     for i, sent in enumerate(sent_tokens):
-        if pr:
+        if pr >= 2:
             print(f"{i+1}. {' '.join(x[0] for x in sent)}")
-            for token, pos in sent:
-                if token and token[0].isalpha() and token[0].islower() and pos in sufficient_pos_set \
-                        and pos in dict_pos_set \
-                        and not token in stop_words:
-                    if token not in pos_dict:
-                        #print(f"Warning: uncommon word {token} in \"{' '.join(tok for tok, _ in sent)})\"")
-                        uncommon_words[token] += 1
+        for token, pos in sent:
+            if token and token[0].isalpha() and token[0].islower() and pos in sufficient_pos_set \
+                    and pos in dict_pos_set \
+                    and not token in stop_words:
+                if token not in pos_dict:
+                    uncommon_words[token] += 1
 
         parse_trees = parse_sentense(sent, grammar, debug=False)
         if pickle_file:
@@ -1318,8 +1334,14 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
             for tree in parse_trees:
                 f.write(tree.str_for_print())
             f.write('\n=========================================================\n')
-        if len(failed) >= max_fails:
+        if max_fails is not None and len(failed) >= max_fails:
             break
+        if pr == 1:
+            progress.update(i+1)
+
+    if pr == 1:
+        progress.finish()
+        print(f'Parsing done')
 
     if pr:
         print("Parsed:", len(parsed))
@@ -1341,7 +1363,7 @@ def test_full_tex_file(file_name, max_fails=100, pr=True, pickle_file=None):
 
         if errors:
             print('Following problems detected:')
-            tex_print_errors()
+            tex_print_errors(3-pr)
             # for err, sent in errors:
             #     print(f'  {err}: "{sent}"')
             # print()
@@ -1395,7 +1417,7 @@ def iterate_tar_contents(filename):
         tar.close()
 
 
-def test_article_dir(dir_name, max_fails=100, pr=True):
+def test_article_dir(dir_name, max_fails: Optional[int] = 100, pr=1, pickle_dir: Optional[str] = 'results'):
     # find .tex file that contains \documentclass
     main_file = None
     for file_name in os.listdir(dir_name):
@@ -1408,7 +1430,11 @@ def test_article_dir(dir_name, max_fails=100, pr=True):
     if main_file is None:
         return "main document not found"
     dir_last_name = dir_name.split('/')[-1]
-    return test_full_tex_file(os.path.join(dir_name, main_file), max_fails, pr, 'results/' + dir_last_name + '.pickle')
+    if pickle_dir and not os.path.exists(pickle_dir):
+        # if needed, create dir to save pickle files
+        os.makedirs(pickle_dir)
+
+    return test_full_tex_file(os.path.join(dir_name, main_file), max_fails, pr, f'{pickle_dir}/{dir_last_name}.pickle' if pickle_dir else None)
 
 
 def test_article_dir_tuple(args):
@@ -1620,57 +1646,18 @@ def test_trees(repeat_threshold=10):
                 f.write(f'{" ".join(subt[0])}: {subt[1]}\n')
 
 
+# read command line argument: path to main tex file
 if __name__ == '__main__':
+    if len(sys.argv) != 2:
+        print('usage: python3 main.py <path to main tex file>')
+        exit(1)
     curr_time = time.time()
-    #test_trees()
-    #test_full_tex_file('tests/main.tex',1000)
-    #test_full_tex_file('tests/Quantum Sampling/main.tex',1000)
-    #test_full_tex_file('tests/Quantum Verification/main.tex')
-    #test_full_tex_file('tests/LTC (stoc2022)/main.tex',1000)
-    #test_full_tex_file('tests/Quantum LDPC Codes with Almost Linear Minimum Distance/main.tex',1000)
-    #test_full_tex_file('tests/Degenerate Quantum LDPC Codes With Good Finite Length Performance/main.tex', 1000)
-    #test_full_tex_file('tests/Linear-algebraic proof of Cleaning Lemma/main.tex', 1000)
-    test_full_tex_file('tests/CircuitModelsHyperbolicEng/main.tex', 1000)
-    #test_full_tex_file('tests/balanced_product/balanced_product_codes.tex',1000)
-    #test_full_tex_file('tests/Convolution_maximizers_DD-22/main.tex')
-    #test_full_tex_file('tests/Supremacy/QS_Supplement.tex', 1000)
-    #test_full_tex_file('tests/qLDPC Weight Reduction/qwr.tex', 1000)
-    #test_article_dir("/Users/gleb/PycharmProjects/ineq-prover/prover/arxiv/0705/0705.0968")
-    #test_dir_with_articles_parallel("/Users/gleb/PycharmProjects/ineq-prover/prover/arxiv/0705")
-    #test_tar_with_articles_parallel("/Users/Gleb/Desktop/Solver/2020-09-08-arxiv-extracts-nofallback-until-2007-068.tar", 100000)
-    print(f'{time.time() - curr_time:.2f} seconds')
-    exit(0)
-    #grammar = parse_grammar(grammar_str)
-    #print(grammar)
-    test_sentenses = [
-        r"this implies that one can obtain pairs of linear codes such that their product and the product of their dual codes are simultaneously robustly testable .",
-        #r"now consider codes $\mathcal{C}_1$ and $\mathcal{C}_2$ such that they have property $(*)$ , and the dual product code $\mathcal{C}_1\boxplus \mathcal{C}_2$ does not have codewords of small weight and large rank .",
-        # 'the cat is in the box',
-        # "Also note that we can always remove the logarithm in the above inequalities by using its concavity and Jensen's inequality",
-        # "This can be fixed by proving a multivariate extension of the ALT inequality based on pinching(see Theorem 2.3).",
-        # "However, we only recover the result for q using complex interpolation theory.",
-        # "Next, recall the multivariate Lie-Trotter product formula in (28)",
-        # "For positive semi-definite operators $\\rho$ and $\\sigma$ , the Hermitian operators $\\sigma$ , $\\rho$ and $\\sigma$ are well-defined under the convention $X$."
-    ]
-    for sentense in test_sentenses:
-        print("=========================================================")
-        print(f"Test sentense: {sentense}\n")
-        tokens = tokenize_text_nltk(sentense)[0]
-        print(f"tokens = {tokens}")
-        print('\nParsing...')
-        parse_trees = parse_sentense(tokens, grammar)
-        print("Parse trees:")
-        for tree in parse_trees:
-            tree.print_tree()
-
-
-# # Test function for parse_natural_text
-# def test_parse_natural_text():
-#     relations = defaultdict(lambda: RelationStats())
-#     patterns = [  # list of english language standard relations and their patterns
-#         ('part_of', "... x_NN is _ part of _ y_NN"),
-#         ('is_a', "... x_NN is _ y_NN"),
-#         ('can_be', "... x_NN can be _ y_NN"),
-#         ('has_a', "... x_NN has a _ y_NN"),
-#         ('has_many', "... x_NN has many _ y_NNS"),
-#     ]
+    filename = sys.argv[1]
+    if os.path.isfile(filename):
+        test_full_tex_file(filename, max_fails=None)
+    elif os.path.isdir(filename):
+        test_article_dir(filename, max_fails=None, pickle_dir=None)
+    else:
+        print(f'{filename} is not a file or directory')
+        exit(1)
+    print(f'{time.time()-curr_time:.2f} seconds')
