@@ -6,7 +6,8 @@ from typing import Optional, List, Dict
 from parse_formula import parse_eqn
 from stdenvs import get_standard_env, TextFragmentBase, AbstractEnvironment, BibliographyEnvironment
 from texbase import TexEnvBase, TexItem, UnknownEnvironment, register_standard_environment
-from texstream import TexDefinedCommands, TexStream, TexEnvironment, TexTheoremDef, TexMacro, TexError, tokens_to_text
+from texstream import TexDefinedCommands, TexStream, TexEnvironment, TexTheoremDef, TexMacro, TexError, tokens_to_text, \
+    tex_error
 
 
 def read_macro_args(text: TexStream, num_args, optional_args):
@@ -69,8 +70,12 @@ def preprocess_tex_file(text: str, commands: TexDefinedCommands, env_stack=None)
                     filename += '.tex'
                 if commands.dir_path is not None:
                     filename = f'{commands.dir_path}/{filename}'
-                with open(filename, 'r') as f:
-                    text.replace(old_pos, text.pos, f.read())
+                try:
+                    with open(filename, 'r') as f:
+                        text.replace(old_pos, text.pos, f.read())
+                except FileNotFoundError:
+                    tex_error(f'file {filename} not found')
+                    text.replace(old_pos, text.pos, '')
             except TexError:
                 print('Error: missing filename in \\' + command)
         elif command == 'newcommand' or command == 'renewcommand':

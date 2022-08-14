@@ -1060,7 +1060,7 @@ def test_full_tex_file(file_name, max_fails: Optional[int] = 100, pr=1, pickle_f
                             stxt = " ".join(x.get_word() for x in tree if isinstance(x, Token))
                             #if pr:
                             #    print(f'error: {err}; in "{stxt}")')
-                            tex_error(f'{err}; in {stxt}')
+                            tex_error(f'{err}; in "{stxt}"')
                             errors.append([err, stxt])
         if len(parse_trees) != 1:
             with open('failed.txt', 'a' if len(failed) else 'w') as f:
