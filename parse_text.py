@@ -1,7 +1,6 @@
 import abc
 
 # import tools for natural language processing
-import json
 import multiprocessing
 import os
 import pickle
@@ -14,263 +13,16 @@ from copy import copy
 from typing import List, Tuple, Optional, Union, Dict
 
 import yaml
-from nltk.stem import *
+import nltk
+from nltk.tokenize import word_tokenize, sent_tokenize
 
 
 # get infinitive form of a word using nltk
 from parse_formula import parse_eqn, Variable, EqnList, ExprTokenSeq, ExprElement, tex_rel_bin_operators
 from stdenvs import BibliographyEnvironment
+from tagger import dictionaries, stop_words
 from texdocument import TexDocument, TextFragment, MathEnv
 from texstream import reset_tex_errors, tex_error, tex_print_errors, tex_warning, tex_error_context
-
-
-def get_infinitive(word):
-    stemmer = PorterStemmer()
-    return stemmer.stem(word)
-
-
-vbp_set = set()
-vbd_set = set()
-vbn_set = set()
-vb_irreg_set = set()
-#vb_irreg_set_ext = {}
-
-
-mobypos_dict = {}
-mobypos_comb_dict = {}
-
-with open('dicts/pos_other_exceptions.yml') as f:
-    data = yaml.load(f, Loader=yaml.CSafeLoader)
-    pos_exceptions = {x: v for k, v in data.items() for x in k.split(',')}
-
-
-def load_mobypos_dict():
-    with open('dicts/mobypos.pickle', 'rb') as f:
-        global mobypos_dict
-        global mobypos_comb_dict
-        mobypos_dict, mobypos_comb_dict = pickle.load(f)
-
-
-def load_irreg_vergs():
-    #prefixes = ['a', 'be', 'in', 'inter', 'mis', 'off', 'over', 'out', 'pre', 're', 'un', 'under', 'up', 'with', '']
-    with open('dicts/irregular_verbs.txt') as f:
-        for line in f:
-            vbp, vbd, vbn, *pref = line.split()
-            vbp_set.update(vbp.split('/'))
-            vbd_set.update(vbd.split('/'))
-            vbn_set.update(vbn.split('/'))
-            if pref:
-                for p in pref[0].split(','):
-                    vbp_set.update([p+x for x in vbp.split('/')])
-                    vbd_set.update([p+x for x in vbd.split('/')])
-                    vbn_set.update([p+x for x in vbn.split('/')])
-    global vb_irreg_set
-    vb_irreg_set = vbp_set|vbn_set|vbd_set
-    #global vb_irreg_set_ext
-    #vb_irreg_set_ext = {prefix+vb: vb for prefix in prefixes for vb in vb_irreg_set}
-
-
-load_irreg_vergs()
-load_mobypos_dict()
-
-
-import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize, sent_tokenize
-
-stop_words = set(stopwords.words('english')) | {'ref', 'cref', 'eqref', 'cite', 'hence',
-                                                'fix', 'put', 'let', 'consider', 'denote', 'define', 'introduce',
-                                                'find', 'imagine', 'note', 'observe', 'suppose'}
-
-
-with open('dict_2-4gram_10000-f.yml', 'r') as pos_dict_file:
-    pos_dict = yaml.load(pos_dict_file, Loader=yaml.CSafeLoader)
-    for key in pos_dict:
-        pos_dict[key] = {k: v for k, v in pos_dict[key].items() if v > 5}
-
-
-with open('dicts/prepositions.txt', 'r') as f:
-    prep_types = yaml.load(f, Loader=yaml.CSafeLoader)
-    prep_types = {prep: v for k, v in prep_types.items() for prep in k.split(',')}
-
-
-dict_pos_set = set(sum((list(v.keys()) for v in pos_dict.values()), []))
-
-
-modal_verbs = {'can', 'could', 'may', 'might', 'must', 'shall', 'should', 'will', 'would'}
-
-
-pos_to_mobipos = {
-    'NN': 'N',
-    'NNP': 'N',
-    'NNS': 'p',
-    'NNPS': 'p',
-    'JJ': 'A',
-    'JJR': 'A',
-    'JJS': 'A',
-    'RB': 'v',
-    'RBR': 'v',
-    'VB': 'Vti',
-    'DT': 'D',
-    'CD': 'M',
-}
-
-
-def can_be_pos_start(word, pos):
-    if pos in pos_to_mobipos and word in mobypos_dict:
-        return bool(set(pos_to_mobipos[pos]) & set(mobypos_dict[word]))
-    return any(key.startswith(pos) for key in pos_dict.get(word, {}))
-
-
-def can_be_pos(word, pos):
-    if pos in pos_to_mobipos and word in mobypos_dict:
-        return bool(set(pos_to_mobipos[pos]) & set(mobypos_dict[word]))
-    return pos in pos_dict.get(word, {})
-
-
-# detect possible part of speech of a word by its suffix
-def detect_pos_recommendation(word: str):
-    if '-' in word:
-        end = word.split('-')[-1]
-        if end:
-            return detect_pos_recommendation(end)
-    if word in pos_exceptions:
-        return [pos_exceptions[word]], {}
-    pos = []
-    neg = {}
-    if len(word) < 3:
-        return pos, neg
-
-    if word.endswith('ing'):
-        if can_be_pos_start(word[:-3], 'VB') or can_be_pos_start(word[:-3]+'e', 'VB') or \
-           len(word) > 5 and word[-5] == word[-4] and word[-4] in 'bcdfghjklmnpqrstvwxz' and can_be_pos_start(word[:-4], 'VB'):
-            #any(key.startswith('VB') for key in pos_dict.get(word[:-3], {})) or \
-                #any(key.startswith('VB') for key in pos_dict.get(word[:-3]+'e', {})):
-            pos += ['VBG']
-    else:
-        neg['VBG'] = 'VBD' if word.endswith('ed') else 'VBN' if word.endswith('en') else 'VBZ' if word.endswith('es') else 'VB'
-
-    if word.endswith('ly'):
-        if can_be_pos(word[:-2], 'JJ'): #any(key.startswith('JJ') for key in pos_dict.get(word[:-2], {})):
-            pos += ['RB']
-        neg['JJ'] = 'RB'
-
-    if word in modal_verbs:
-        return ['MD'], neg
-
-    if word in vb_irreg_set:
-        w = word  # if word in vb_irreg_set else vb_irreg_set_ext[word]
-        if w in vbp_set:
-            pos += ['VB', 'VBP']
-        if w in vbd_set:
-            pos += ['VBD']
-        if w in vbn_set:
-            pos += ['VBN']
-        for p in ['VB', 'VBP', 'VBD', 'VBN']:
-            if p not in pos:
-                neg[p] = pos[0]
-    else:
-        if word.endswith('ed'):
-            if can_be_pos_start(word[:-2], 'VB') or can_be_pos_start(word[:-2]+'e', 'VB') or \
-               word[-3:] == 'ied' and can_be_pos_start(word[:-3]+'y', 'VB') or \
-               len(word) > 4 and word[-4] == word[-3] and word[-3] in 'bcdfghjklmnpqrstvwxz' and can_be_pos_start(word[:-3], 'VB'):
-                pos += ['VBD', 'VBN', 'JJ']
-        else:
-            neg['VBD'] = 'VB'
-            neg['VBN'] = 'VB'
-
-        # if word.endswith('en'):
-        #     if any(key.startswith('VB') for key in pos_dict.get(word[:-2], {})) or \
-        #             any(key.startswith('VB') for key in pos_dict.get(word[:-2]+'e', {})):
-        #         pos = ['VBN', 'JJ']
-    if word.endswith('er'):
-        if can_be_pos(word[:-2], 'JJ') or can_be_pos(word[:-2]+'e', 'JJ'):
-            pos += ['JJR']
-        if can_be_pos(word[:-2], 'RB') or can_be_pos(word[:-2]+'y', 'RB'):
-            pos += ['RBR']
-        if can_be_pos(word[:-2], 'VB') or can_be_pos(word[:-2]+'e', 'VB'):
-            pos += ['NN']
-    else:
-        if word not in ('worse', 'less', 'more'):
-            neg['JJR'] = 'JJ'
-            neg['RBR'] = 'RB'
-
-    if word.endswith('est'):
-        if can_be_pos(word[:-3], 'JJ') or can_be_pos(word[:-3]+'e', 'JJ'):
-            pos += ['JJS']
-    elif not word.endswith('st'):
-        neg['JJS'] = 'JJ'
-
-    if len(word) > 2 and word.endswith('s'):
-        if can_be_pos(word[:-1], 'NN') or \
-                word[-3:] == 'ies' and can_be_pos_start(word[:-3]+'y', 'NN') or\
-                word[-3:] in ('ses', 'xes', 'zes') and can_be_pos_start(word[:-2]+'s', 'NN') or\
-                word[-4:] == 'ices' and can_be_pos_start(word[:-4]+'ex', 'NN'):
-            if any(letter.isupper() for letter in word):
-                pos.append('NNPS')
-            else:
-                pos.append('NNS')
-        if can_be_pos_start(word[:-1], 'VB') or \
-                word[-3:] == 'ies' and can_be_pos_start(word[:-3] + 'y', 'VB') or \
-                word[-3:] in ('ses', 'xes', 'zes', 'oes') and can_be_pos_start(word[:-2], 'VB'):
-            pos.append('VBZ')
-    else:
-        neg['VBZ'] = 'VB'
-        neg['NNPS'] = 'NNP'
-        if word[-1] == 'a':
-            if can_be_pos(word[:-1], 'NN'):
-                pos += ['NNS']
-        elif 'p' not in mobypos_dict.get(word, ''):
-            neg['NNS'] = 'NN'
-
-    if word.endswith('ness'):
-        pos += ['NN']
-
-    #if word.endswith('ate'):
-    #    pos = ['VB', 'VBP', 'NN', 'JJ']
-
-    if word.endswith('ful'):
-        if can_be_pos(word[:-3], 'NN') or can_be_pos(word[:-3]+'e', 'NN'):
-            pos += ['JJ']
-
-    sym_map = {'N': 'NN', 'p': 'NNS', 't': 'VB', 'i': 'VB', 'V': 'VB', 'A': 'JJ', 'v': 'RB','D': 'DT', 'M': 'CD'}
-    if word in mobypos_dict:
-        for sym in mobypos_dict[word]:
-            if sym in sym_map:
-                r = sym_map[sym]
-                r = neg.get(r, r)
-                if r not in pos:
-                    pos.append(r)
-
-    return pos, neg
-
-
-special_tokens = {'ie': 'IE', 'eg': 'EG', 'et_al': 'ET_AL', 'cf': 'CF'}
-
-
-def get_pos(word, tag):
-    if not word:
-        return word, tag
-    if word[0].isupper() and not tag.startswith('NNP'):
-        if word.lower() in stop_words:
-            word = word.lower()
-        else:
-            tag = 'NNP'
-    elif word in special_tokens:
-        tag = special_tokens[word]
-    else:
-        pos, neg = detect_pos_recommendation(word)
-        if tag in neg:
-            tag = neg[tag]
-        if tag in dict_pos_set and ((word in pos_dict and pos_dict[word].get(tag, 0) < 5) or (pos and tag not in pos)):
-            items = [(neg.get(k, k), v) for k, v in pos_dict.get(word, {}).items()]
-            if pos and set(pos)&set(items):
-                tag = max(((k,v) for k,v in items if k in pos), key=lambda x: x[1])[0]
-            elif pos:
-                tag = pos[0]
-            elif items:
-                tag = max(items, key=lambda x: x[1])[0]
-    return word, tag
 
 
 # replaces $ <formula> $ or $$ <formula> $$ or \[ <formula> \] or \begin{equation} <formula> \end{equation} by formula_i
@@ -332,9 +84,8 @@ def replace_multiple(text: str, replacements):
     return re.subn('|'.join(re.escape(k) for k in replacements.keys()), lambda m: replacements[m.group(0)], text)
 
 
-# sent_tokenize is one of instances of
-# PunktSentenceTokenizer from the nltk.tokenize.punkt module
 def tokenize_text_nltk(txt):
+    dicts = dictionaries()
     res = []
     txt, formulas = replace_tex_formulas(txt)
     # remove all braces
@@ -381,14 +132,7 @@ def tokenize_text_nltk(txt):
                 tagged[0] = (tagged[0][0], 'NNP')
 
         for i, (word, tag) in enumerate(tagged):
-            tagged[i] = get_pos(word, tag)
-            # if word and word[0].isupper() and not tag.startswith('NNP'):
-            #     tagged[i] = (word, 'NNP')
-            # elif word in special_tokens:
-            #     tagged[i] = (word, special_tokens[word])
-            # elif tag in dict_pos_set and word in pos_dict and pos_dict[word].get(tag, 0) < 5:
-            #     best_tag = max(pos_dict[word].items(), key=lambda x: x[1])[0]
-            #     tagged[i] = (word, best_tag)
+            tagged[i] = dicts.get_pos(word, tag)
 
         tagged = [('', 'SOL')] + tagged
         # find and replace formulas in tagged list
@@ -615,6 +359,7 @@ def get_eqn_metadata(eqn):
     eqn_parsed = parse_eqn(eqn)
     return get_parsed_eqn_metadata(eqn_parsed, eqn)
 
+
 # Token class, contains word and metadata from nltk tokenizer
 class Token(ParseTreeNode):
     def __init__(self, word, pos, metadata):
@@ -623,7 +368,7 @@ class Token(ParseTreeNode):
         self.pos = pos
         self.metadata = copy(metadata)
         if self.ps in ('IN', 'TO'):
-            self.metadata.update(prep_types.get(word, {}))
+            self.metadata.update(dictionaries().prep_types.get(word, {}))
         self.metadata['leaf'] = 1
         if self.ps == 'EQN' and self.word[-1] != '-' and (self.word[0] == '$' or self.word[:2] == '\\['):
             self.metadata.update(get_eqn_metadata(self.word))
@@ -1239,6 +984,7 @@ sufficient_pos_set = {'FW', 'JJ', 'JJR', 'JJS', 'MD', 'NN', 'NNP', 'NNPS', 'NNS'
 
 
 def test_full_tex_file(file_name, max_fails: Optional[int] = 100, pr=1, pickle_file=None):
+    dicts = dictionaries()
     reset_tex_errors()
     if pr:
         print(f'Preprocessing {file_name} ... ')
@@ -1296,9 +1042,9 @@ def test_full_tex_file(file_name, max_fails: Optional[int] = 100, pr=1, pickle_f
             print(f"{i+1}. {' '.join(x[0] for x in sent)}")
         for token, pos in sent:
             if token and token[0].isalpha() and token[0].islower() and pos in sufficient_pos_set \
-                    and pos in dict_pos_set \
+                    and pos in dicts.dict_pos_set \
                     and not token in stop_words:
-                if token not in pos_dict:
+                if token not in dicts.pos_dict:
                     uncommon_words[token] += 1
 
         parse_trees = parse_sentense(sent, grammar, debug=False)
