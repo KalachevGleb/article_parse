@@ -13,6 +13,12 @@
       but can be used to detect some types of errors and typos.
     - Currently, supports only English language.
 
+## Requirements
+
+- Python 3.8+
+- nltk
+- yaml
+
 ## Possible usage
 
 Can be used to find errors in TeX sources. Currently, it performs following checks:
@@ -43,7 +49,7 @@ Since currently preprocessor doesn't save locations in source files,
 for each found problem it reports the sentence or a part of the sentence where the problem was found.
 In this case the sentence is also can be found by searching its part in a text editor.
 3. If problem was found in formula, the formula with found promlem is printed (with expanded macros). 
-4. Following files are generated for debugging porposes:
+4. Following files are generated for debugging purposes:
    - **preprocessed.tex**: preprocessed TeX source with expanded user-defined macros and removed comments.
    - **parsed.txt**: contains parse trees of all sentences that were parsed (hovewer, some of them maybe parsed incorrectly).
    - **failed.txt**: contains sentences that were not entirely parsed (parts of sentence represented as separate syntax trees).
