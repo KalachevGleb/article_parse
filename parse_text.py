@@ -1063,19 +1063,19 @@ def test_full_tex_file(file_name, max_fails: Optional[int] = 100, pr=1, pickle_f
                             tex_error(f'{err}; in "{stxt}"')
                             errors.append([err, stxt])
         if len(parse_trees) != 1:
-            with open('failed.txt', 'a' if len(failed) else 'w') as f:
+            with open('failed.txt', 'a' if len(failed) else 'w', encoding='utf-8') as f:
                 f.write(f"{len(failed)+1}. {' '.join(x[0] for x in sent)}\n")
                 for tree in parse_trees:
                     f.write(tree.str_for_print())
                 f.write('\n=========================================================\n')
             failed.append((i, ' '.join(x[0] for x in sent), parse_trees))
         else:
-            with open('parsed.txt', 'a' if len(parsed) else 'w') as f:
+            with open('parsed.txt', 'a' if len(parsed) else 'w', encoding='utf-8') as f:
                 f.write(f"{len(parsed)+1}. {' '.join(x[0] for x in sent)}\n")
                 f.write(parse_trees[0].str_for_print())
                 f.write('\n=========================================================\n')
             parsed.append((i, ' '.join(x[0] for x in sent), parse_trees))
-        with open('parse_trees.txt', 'a' if len(parsed)+len(failed) > 1 else 'w') as f:
+        with open('parse_trees.txt', 'a' if len(parsed)+len(failed) > 1 else 'w', encoding='utf-8') as f:
             f.write(f"{len(failed) + len(parsed)}. {' '.join(x[0] for x in sent)}\n")
             for tree in parse_trees:
                 f.write(tree.str_for_print())

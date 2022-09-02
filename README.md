@@ -18,6 +18,7 @@
 - Python 3.8+
 - nltk
 - yaml
+- progressbar
 
 ## Possible usage
 
