@@ -1163,7 +1163,7 @@ def iterate_tar_contents(filename):
         tar.close()
 
 
-def test_article_dir(dir_name, max_fails: Optional[int] = 100, pr=1, pickle_dir: Optional[str] = 'results'):
+def get_main_file(dir_name):
     # find .tex file that contains \documentclass
     main_file = None
     for file_name in os.listdir(dir_name):
@@ -1173,6 +1173,14 @@ def test_article_dir(dir_name, max_fails: Optional[int] = 100, pr=1, pickle_dir:
                     #print(file_name)
                     main_file = file_name
                     break
+    if main_file is None:
+        return None
+    return os.path.join(dir_name, main_file)
+
+
+def test_article_dir(dir_name, max_fails: Optional[int] = 100, pr=1, pickle_dir: Optional[str] = 'results'):
+    # find .tex file that contains \documentclass
+    main_file = get_main_file(dir_name)
     if main_file is None:
         return "main document not found"
     dir_last_name = dir_name.split('/')[-1]

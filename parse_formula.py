@@ -557,11 +557,15 @@ def parse_eqn(text):
                     tex_weak_warning(f'rare parenthesis pair {par} {rpar} in "{"".join(text)}"')
                 else:
                     tex_warning(f'left parenthesis {par} and right parenthesis {rpar} do not match in "{"".join(text)}"')
-        elif (is_par := token in all_paren_elems) or token[-1] in 'rlRL' and token[:-1] in tex_paren_sizes:
+        elif (is_par := token in all_paren_elems) or (token[-1] in 'rlRL' and token[:-1] in tex_paren_sizes) or token in tex_paren_sizes:
             if is_par:
                 left = token in left_paren_elems and (not token in right_paren_elems or not par_stack or par_stack[-1][0] != right2left_map[token] or par_stack[-1][1] != 1)
                 par = token
                 size = 1
+            elif token in tex_paren_sizes:
+                par = stream.read_token()
+                left = par in left_paren_elems and (not par in right_paren_elems or not par_stack or par_stack[-1][0] != right2left_map[par] or par_stack[-1][1] != 1)
+                size = tex_paren_sizes[token]
             else:
                 left = token[-1] in 'lL'
                 par = stream.read_token()

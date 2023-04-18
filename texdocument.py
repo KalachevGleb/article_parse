@@ -42,6 +42,7 @@ def preprocess_tex_file(text: str, commands: TexDefinedCommands, env_stack=None)
     # remove tex comments:  % ... \n
     if isinstance(text, str):
         # find comments started from % which is not escaped
+        text = re.sub(r'\r', ' ', text)
         text = re.sub(r'(?<!\\)%.*?\n', '', text)
         #text = re.sub(r'%.*\n', '', text)
         # remove tex comments of the form \iffalse ... \fi
@@ -115,6 +116,12 @@ def preprocess_tex_file(text: str, commands: TexDefinedCommands, env_stack=None)
                 commands.add_macro(TexMacro(name[1:], 0, None, old_command))
             except TexError:
                 print('Error: cannot read arguments in \\let')
+        elif command == 'DeclareMathOperator':
+            try:
+                name, val = text.read_args([True,True], as_str=True)
+                commands.add_macro(TexMacro(name[1:], 0, None, rf'\mathop{{\mathrm{{{val}}}}}'))
+            except TexError:
+                print('Error: cannot read arguments in \\DeclareMathOperator')
         elif command == 'newenvironment' or command == 'renewenvironment':
             # find *{name}[num of args][optional arg]{begin def}{end def}
             try:
@@ -181,7 +188,10 @@ def preprocess_tex_file(text: str, commands: TexDefinedCommands, env_stack=None)
             # find {body}
             try:
                 body, = text.read_args([True], as_str=True)
-                setattr(commands, command, body)
+                if command in ('author', 'authors'):
+                    commands.authors = [body] if commands.authors is None else commands.authors + [body]
+                else:
+                    setattr(commands, command, body)
             except TexError:
                 print('Error: cannot read body of \\' + command)
         elif command == 'footnote':
